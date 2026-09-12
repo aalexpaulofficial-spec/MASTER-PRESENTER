@@ -8,6 +8,7 @@ import {
   Hand,
   HelpCircle,
   Maximize,
+  Minus,
   UploadCloud,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -169,6 +170,11 @@ function PresentPage() {
   const [highlights, setHighlights] = useState<VoiceHighlight[]>([]);
   const [writingBySlide, setWritingBySlide] = useState<Record<number, WritingStroke[]>>({});
   const [activeWritingColor, setActiveWritingColor] = useState<WritingColor>("color-0");
+  // Per-slide undo/redo stacks (§13 §14 §29). Only Master Write overlay strokes
+  // live here; the original PPT/PPTX is never touched (§14 §21 §28).
+  const historyRef = useRef<Record<number, { undo: WritingStroke[][]; redo: WritingStroke[][] }>>(
+    {},
+  );
   const capabilities = capabilitiesForPlan(planName);
 
   const slideCountRef = useRef(slideCount);
@@ -194,22 +200,38 @@ function PresentPage() {
 
   const onAction = useCallback((action: "next" | "prev") => go(action === "next" ? 1 : -1), [go]);
 
+  // A snapshot of the current slide's overlay, paired with the slide it belongs
+  // to, so each commit to history is self-contained and slide-aware (§13 §29).
+  const snapshot = useCallback(
+    (strokes: WritingStroke[]): WritingStroke[] =>
+      strokes.map((s) => ({ ...s, points: s.points.map((p) => ({ ...p })) })),
+    [],
+  );
+
   const clearWriting = useCallback(() => {
     setWritingBySlide((prev) => {
       const strokes = prev[index] ?? [];
       if (strokes.length === 0) return prev;
+      const hist = historyRef.current;
+      const slide = (hist[index] ??= { undo: [], redo: [] });
+      slide.undo.push(snapshot(strokes));
+      slide.redo = [];
       return { ...prev, [index]: [] };
     });
-  }, [index]);
+  }, [index, snapshot]);
 
   const commitStroke = useCallback(
     (stroke: WritingStroke) => {
-      setWritingBySlide((prev) => ({
-        ...prev,
-        [index]: [...(prev[index] ?? []), stroke],
-      }));
+      setWritingBySlide((prev) => {
+        const before = prev[index] ?? [];
+        const hist = historyRef.current;
+        const slide = (hist[index] ??= { undo: [], redo: [] });
+        slide.undo.push(snapshot(before));
+        slide.redo = [];
+        return { ...prev, [index]: [...before, stroke] };
+      });
     },
-    [index],
+    [index, snapshot],
   );
 
   const eraseAt = useCallback(
@@ -221,14 +243,65 @@ function PresentPage() {
           return `e${eraseIdRef.current}`;
         });
         if (next === strokes) return prev;
+        const hist = historyRef.current;
+        const slide = (hist[index] ??= { undo: [], redo: [] });
+        slide.undo.push(snapshot(strokes));
+        slide.redo = [];
         return { ...prev, [index]: next };
       });
     },
-    [index],
+    [index, snapshot],
+  );
+
+  // A whole Manual Eraser sweep arrives as one replacement overlay, so it is a
+  // single undo entry — never the per-point erase events (§9 §13).
+  const eraseSegment = useCallback(
+    (segment: WritingStroke[]) => {
+      setWritingBySlide((prev) => {
+        const strokes = prev[index] ?? [];
+        const hist = historyRef.current;
+        const entry = (hist[index] ??= { undo: [], redo: [] });
+        entry.undo.push(snapshot(strokes));
+        entry.redo = [];
+        return { ...prev, [index]: segment };
+      });
+    },
+    [index, snapshot],
   );
 
   const selectWritingColor = useCallback((color: WritingColor) => {
     setActiveWritingColor(color);
+  }, []);
+
+  const undoWriting = useCallback(() => {
+    setWritingBySlide((prev) => {
+      const hist = historyRef.current;
+      const slide = hist[index];
+      if (!slide || slide.undo.length === 0) return prev;
+      const current = prev[index] ?? [];
+      slide.redo.push(snapshot(current));
+      const restored = slide.undo.pop() ?? [];
+      return { ...prev, [index]: restored };
+    });
+  }, [index, snapshot]);
+
+  const redoWriting = useCallback(() => {
+    setWritingBySlide((prev) => {
+      const hist = historyRef.current;
+      const slide = hist[index];
+      if (!slide || slide.redo.length === 0) return prev;
+      const current = prev[index] ?? [];
+      slide.undo.push(snapshot(current));
+      const restored = slide.redo.pop() ?? [];
+      return { ...prev, [index]: restored };
+    });
+  }, [index, snapshot]);
+
+  // A new slide resets nothing on the slide itself, but the gesture machine is
+  // reset in WritingLayer. The per-slide undo/redo stacks persist (§29) until the
+  // deck is reloaded.
+  const onSlideChangeReset = useCallback(() => {
+    setWritingBySlide((prev) => prev);
   }, []);
 
   // The camera loop feeds fingertip samples straight into the WritingLayer,
@@ -304,6 +377,20 @@ function PresentPage() {
       await el.requestFullscreen?.().catch(() => undefined);
     }
   }, []);
+
+  // Minimize / reopen the Master Write toolbar from the control bar below the
+  // slide (works in preview; in fullscreen the toolbar is gesture-driven only).
+  // Minimize hides the bar but keeps the armed tool + colour; reopen re-enters
+  // select mode (§6 §7 §11). Mirrors the on-screen Minus button.
+  const toggleFullFromWriting = useCallback(() => {
+    // The on-screen Minus (and the gesture) drive the toolbar through the
+    // WriteGestureMachine inside WritingLayer. Re-open the toolbar by feeding
+    // the camera path a deliberate INDEX + MIDDLE raise sequence.
+    handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" });
+    setTimeout(() => handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" }), 10);
+    setTimeout(() => handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" }), 20);
+    setTimeout(() => handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" }), 30);
+  }, [handleIndexPoint]);
 
   useEffect(() => {
     const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -629,6 +716,9 @@ function PresentPage() {
                       onClearAll={clearWriting}
                       onCommitStroke={commitStroke}
                       onErase={eraseAt}
+                      onEraseSegment={eraseSegment}
+                      onUndo={undoWriting}
+                      onRedo={redoWriting}
                     />
                   ) : undefined
                 }
@@ -661,6 +751,11 @@ function PresentPage() {
               <Button onClick={() => void toggleFullscreen()}>
                 <Maximize className="mr-1 h-4 w-4" /> Enter Fullscreen
               </Button>
+              {capabilities.writing && (
+                <Button variant="outline" onClick={() => toggleFullFromWriting()}>
+                  <Minus className="mr-1 h-4 w-4" /> Open / Hide Toolbar
+                </Button>
+              )}
               <HowToControl planName={planName} />
               {capabilities.voice && (
                 <div className="flex items-center gap-2 ml-2">
@@ -712,8 +807,8 @@ function PresentPage() {
           gesture={gesture}
           handVisible={handVisible}
           hidden={isFullscreen}
-          pointingLabel={capabilities.writing ? "Index finger — cursor" : undefined}
-          twoFingerLabel={capabilities.writing ? "Index + middle — toolbar" : undefined}
+          pointingLabel={capabilities.writing ? "Index finger — cursor / pen" : undefined}
+          twoFingerLabel={capabilities.writing ? "Index + middle — open toolbar" : undefined}
           onRetry={retry}
         />
       )}
@@ -731,8 +826,8 @@ function HowToControl({ planName }: { planName: string }) {
     capabilities.writing
       ? {
           icon: "Tools",
-          cmd: "Raised Index Finger",
-          desc: "Open the writing toolbar - it does not write yet",
+          cmd: "Index + Middle Finger",
+          desc: "Open / reopen the writing toolbar (once per raise)",
         }
       : { icon: "Point", cmd: "Raised Index Finger", desc: "Laser Pointer" },
     ...(capabilities.writing
@@ -743,12 +838,29 @@ function HowToControl({ planName }: { planName: string }) {
             desc: "Select that color, then move your fingertip to write",
           },
           {
-            icon: "Erase",
+            icon: "Minus",
+            cmd: "Minus Button",
+            desc: "Hide the toolbar — you keep writing",
+          },
+          {
+            icon: "Tools",
             cmd: "Index + Middle Finger",
-            desc: "Reopen the toolbar for Manual Eraser or Erase All",
+            desc: "Reopen the toolbar for a new color, Eraser, Erase All, Undo or Redo",
           },
         ]
       : []),
+  ];
+  const writingSteps = [
+    "1. Raise INDEX + MIDDLE fingers together to open the Master Write toolbar: 5 writing colors, Manual Eraser, Erase All, Undo, Redo and Minus. It fires once per raise — lower your hand to neutral, then raise again to toggle.",
+    "2. Use your INDEX finger to select one of the 5 colors: dwell the fingertip on the color for a moment. The color becomes active and the toolbar stays visible.",
+    "3. Move your lone INDEX finger to write — the ink follows the fingertip in real time, right under the tip. Holding still simply lifts the pen.",
+    "4. The toolbar stays visible while you write. Use it at any time to pick another color, the Manual Eraser, or Erase All.",
+    "5. Click MINUS to minimize the toolbar — your color stays armed and you keep writing with your index finger.",
+    "6. Continue writing while minimized. Raise INDEX + MIDDLE again to reopen the toolbar.",
+    "7. Use Manual Eraser to erase Master Write marks under the fingertip; Erase All clears writing on the current slide only. Original PPT/PPTX is never touched.",
+    "8. Use Undo and Redo to correct writing, per slide.",
+    "9. Writing stays separate for each slide; your original PPT/PPTX is never modified.",
+    "10. Master Write has NO Laser Pointer — the 5 colors are writing colors only.",
   ];
 
   return (
@@ -795,7 +907,7 @@ function HowToControl({ planName }: { planName: string }) {
           </ul>
           <p className="mt-3 rounded-lg bg-primary-soft/50 px-3 py-2 text-xs text-muted-foreground">
             {capabilities.writing
-              ? "In Master Write, raising your index finger opens the writing toolbar - it never starts writing on its own. Select a color (or an eraser) first, then move your fingertip to write. Laser pointer is not available and cannot be triggered accidentally."
+              ? "In Master Write, raise INDEX + MIDDLE to open the toolbar — once per raise: lower your hand to neutral, then raise again to toggle. The toolbar stays visible while you write; MINUS minimizes it but you keep writing. A lone index finger selects a color by dwelling, then writes by moving. INDEX + MIDDLE again reopens it. Eraser, Erase All, Undo and Redo live in the toolbar. No laser pointer, ever."
               : "The laser pointer works only from your hand - a raised index finger. It is never triggered by voice."}
           </p>
         </div>
@@ -836,16 +948,7 @@ function HowToControl({ planName }: { planName: string }) {
               <Eraser className="h-4 w-4 text-primary" /> Master Write
             </p>
             <ol className="space-y-2.5 text-sm">
-              {[
-                "Raise your index finger. The writing toolbar appears — 5 colors, Manual Eraser and Erase All. Nothing is written yet.",
-                "Your fingertip is a cursor first: a small ring follows the exact tip of your index finger across the whole slide.",
-                "Hold the ring on a color for a moment to select it. The toolbar disappears and that color is armed and ready.",
-                "Now move your fingertip to write, in real time and right under the tip. Holding still simply lifts the pen.",
-                "Raise your index AND middle fingers together at any time to bring the toolbar back — to change color or reach an eraser.",
-                "Select Manual Eraser, then sweep your fingertip over your marks to rub out only what it passes over.",
-                "Select Erase All to clear every mark on the current slide, then carry on pointing and writing as usual.",
-                "Writing is kept separately for each slide for the whole session; your PPT is never modified.",
-              ].map((step, stepIndex) => (
+              {writingSteps.map((step, stepIndex) => (
                 <li key={stepIndex} className="flex items-start gap-3">
                   <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border border-border bg-secondary font-mono text-[11px] text-foreground">
                     {stepIndex + 1}
@@ -855,9 +958,11 @@ function HowToControl({ planName }: { planName: string }) {
               ))}
             </ol>
             <p className="mt-3 rounded-lg bg-primary-soft/50 px-3 py-2 text-xs text-muted-foreground">
-              A raised index finger never writes by itself: raise, select a color, then write. No
-              laser pointer is available in Master Write. Writing and erasing are a frontend overlay
-              — your original PPT/PPTX is never modified.
+              Remember the rhythm: INDEX + MIDDLE opens the tools, INDEX selects a color, INDEX
+              movement writes, MINUS hides the tools, INDEX + MIDDLE opens them again. The gesture
+              fires once per raise — return your hand to neutral between toggles. The toolbar stays
+              visible while you write. No laser pointer in Master Write. Writing and erasing are a
+              frontend overlay — your original PPT/PPTX is never modified.
             </p>
           </div>
         )}

@@ -177,5 +177,5 @@ export const gestureLabel: Record<Gesture, string> = {
   "open-palm-front": "Front palm — next slide",
   "open-palm-back": "Back palm — previous slide",
   pointing: "Index finger — laser",
-  "two-fingers": "Two fingers",
+  "two-fingers": "Index + middle — toolbar",
 };

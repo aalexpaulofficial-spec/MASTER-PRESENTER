@@ -85,13 +85,15 @@ function Landing() {
   } = usePWAInstall();
   const [alreadyInstalledOpen, setAlreadyInstalledOpen] = useState(false);
   const [instructionModalOpen, setInstructionModalOpen] = useState(false);
-  const [instructionPlatform, setInstructionPlatform] = useState<"ios" | "android" | "desktop">(() => {
-    if (typeof window !== "undefined") {
-      if (isAndroid()) return "android";
-      if (isIos()) return "ios";
-    }
-    return "desktop";
-  });
+  const [instructionPlatform, setInstructionPlatform] = useState<"ios" | "android" | "desktop">(
+    () => {
+      if (typeof window !== "undefined") {
+        if (isAndroid()) return "android";
+        if (isIos()) return "ios";
+      }
+      return "desktop";
+    },
+  );
   const [installing, setInstalling] = useState(false);
 
   // Initialize instructionPlatform after mount for proper client-side detection
@@ -114,8 +116,8 @@ function Landing() {
   const downloadButtonLabel = isConfirmedInstalled
     ? "Already Installed"
     : installState === "INSTALLING" || installing
-    ? "Installing…"
-    : "Free Download";
+      ? "Installing…"
+      : "Free Download";
 
   async function handleDownload() {
     if (isConfirmedInstalled || isInstallationConfirmed() || isRunningAsInstalledPWA()) {
@@ -266,7 +268,8 @@ function Landing() {
           <DialogHeader>
             <DialogTitle className="font-display text-lg">Already Installed</DialogTitle>
             <DialogDescription className="text-sm mt-2 text-muted-foreground leading-relaxed">
-              Master Presenter is already installed on your device. You can launch it anytime from your home screen or desktop, or start presenting right now!
+              Master Presenter is already installed on your device. You can launch it anytime from
+              your home screen or desktop, or start presenting right now!
             </DialogDescription>
           </DialogHeader>
           <div className="mt-5 flex flex-col gap-2">
@@ -319,25 +322,33 @@ function Landing() {
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                     1
                   </span>
-                  <span>Tap <strong>Share</strong> in Safari.</span>
+                  <span>
+                    Tap <strong>Share</strong> in Safari.
+                  </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                     2
                   </span>
-                  <span>Tap <strong>"Add to Home Screen"</strong>.</span>
+                  <span>
+                    Tap <strong>"Add to Home Screen"</strong>.
+                  </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                     3
                   </span>
-                  <span>Turn ON <strong>"Open as Web App"</strong> if available.</span>
+                  <span>
+                    Turn ON <strong>"Open as Web App"</strong> if available.
+                  </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                     4
                   </span>
-                  <span>Tap <strong>"Add"</strong>.</span>
+                  <span>
+                    Tap <strong>"Add"</strong>.
+                  </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
@@ -358,7 +369,9 @@ function Landing() {
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                     2
                   </span>
-                  <span>Choose <strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.</span>
+                  <span>
+                    Choose <strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.
+                  </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
@@ -379,13 +392,17 @@ function Landing() {
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                     1
                   </span>
-                  <span>Look for the <strong>Install</strong> icon in your browser address bar.</span>
+                  <span>
+                    Look for the <strong>Install</strong> icon in your browser address bar.
+                  </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
                     2
                   </span>
-                  <span>Click <strong>"Install"</strong> to add Master Presenter as a desktop app.</span>
+                  <span>
+                    Click <strong>"Install"</strong> to add Master Presenter as a desktop app.
+                  </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
@@ -409,7 +426,8 @@ function Landing() {
             <div className="text-left">
               <p className="text-sm font-semibold text-foreground">Works Completely Offline</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Present slides with hand and voice control anywhere on phone, tablet, and laptop, even without internet access.
+                Present slides with hand and voice control anywhere on phone, tablet, and laptop,
+                even without internet access.
               </p>
             </div>
           </div>
@@ -940,6 +958,10 @@ function Pricing() {
         "Clear / erase writing",
         "Smooth low-latency drawing",
         "Accurate full-slide coordinate mapping",
+        "Index + middle opens the writing toolbar on screen",
+        "5 writing colors, Manual Eraser, Erase All, Undo, Redo, Minus",
+        "Toolbar stays visible while writing; MINUS minimizes it",
+        "Color by dwelling, write by moving the index finger",
         "No Laser Pointer in Master Write",
         "Original PPT/PPTX remains unchanged",
       ],
@@ -1102,8 +1124,12 @@ function Pricing() {
                     <p>Hands - slide navigation</p>
                     <p>Voice - next / previous / direct slide number</p>
                     <p>Writing Mode - index finger writes on the slide</p>
-                    <p>Multiple strokes with clear / erase writing</p>
-                    <p className="font-semibold text-foreground">No Laser Pointer in Master Write</p>
+                    <p>Index + middle opens the writing toolbar</p>
+                    <p>5 writing colors, Manual Eraser, Erase All, Undo, Redo, Minus</p>
+                    <p>Toolbar stays visible while writing; MINUS hides it</p>
+                    <p className="font-semibold text-foreground">
+                      No Laser Pointer in Master Write
+                    </p>
                   </div>
                 </div>
               )}

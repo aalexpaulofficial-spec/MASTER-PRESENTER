@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import { Eraser, Trash2 } from "lucide-react";
+import { Eraser, Minus, Redo2, Trash2, Undo2 } from "lucide-react";
 import {
-  ERASER_MENU_ITEMS,
-  ERASER_RADIUS,
   WRITING_COLOR_ORDER,
   WriteGestureMachine,
   colorValue,
@@ -42,6 +40,10 @@ type Props = {
   onClearAll: () => void;
   onCommitStroke: (stroke: WritingStroke) => void;
   onErase: (point: WritingPoint) => void;
+  /** Pushes a whole sweep (bracketed by erase-begin/erase-end) as one undo unit. */
+  onEraseSegment: (segment: WritingStroke[]) => void;
+  onUndo: () => void;
+  onRedo: () => void;
 };
 
 /** Names shown while the fingertip dwells on a toolbar item. */
@@ -53,6 +55,9 @@ const ITEM_LABEL: Record<WriteMenuItem, string> = {
   "color-4": "White",
   "manual-eraser": "Manual Eraser",
   "clear-all": "Erase All",
+  undo: "Undo",
+  redo: "Redo",
+  minimize: "Minus",
 };
 
 /** Paints one stroke with midpoint-quadratic smoothing so lines never look faceted. */
@@ -106,6 +111,9 @@ export function WritingLayer({
   onClearAll,
   onCommitStroke,
   onErase,
+  onEraseSegment,
+  onUndo,
+  onRedo,
 }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -116,6 +124,8 @@ export function WritingLayer({
 
   const machineRef = useRef(new WriteGestureMachine());
   const liveRef = useRef<WritingStroke | null>(null);
+  const erasingRef = useRef(false);
+  const eraseRunRef = useRef<WritingStroke[]>([]);
   const strokesRef = useRef<WritingStroke[]>(strokes);
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 });
   const itemRectsRef = useRef(new Map<WriteMenuItem, SlideRect>());
@@ -134,11 +144,17 @@ export function WritingLayer({
   const onClearAllRef = useRef(onClearAll);
   const onCommitStrokeRef = useRef(onCommitStroke);
   const onEraseRef = useRef(onErase);
+  const onEraseSegmentRef = useRef(onEraseSegment);
+  const onUndoRef = useRef(onUndo);
+  const onRedoRef = useRef(onRedo);
   const colorRef = useRef<WritingColor>(color);
   onSelectColorRef.current = onSelectColor;
   onClearAllRef.current = onClearAll;
   onCommitStrokeRef.current = onCommitStroke;
   onEraseRef.current = onErase;
+  onEraseSegmentRef.current = onEraseSegment;
+  onUndoRef.current = onUndo;
+  onRedoRef.current = onRedo;
   colorRef.current = color;
 
   const nextId = useCallback(() => {
@@ -209,6 +225,8 @@ export function WritingLayer({
   useEffect(() => {
     machineRef.current.reset();
     liveRef.current = null;
+    erasingRef.current = false;
+    eraseRunRef.current = [];
     toolbarOpenRef.current = false;
     hoveredRef.current = null;
     toolRef.current = "pen";
@@ -236,7 +254,7 @@ export function WritingLayer({
   /** Rubs out only Master Write strokes under the fingertip — never the PPT (§9). */
   function applyErase(point: WritingPoint): void {
     const current = strokesRef.current;
-    const next = eraseFromStrokes(current, point, ERASER_RADIUS, nextId);
+    const next = eraseFromStrokes(current, point, 0.035, nextId);
     if (next !== current) {
       strokesRef.current = next;
       onEraseRef.current(point);
@@ -258,7 +276,7 @@ export function WritingLayer({
     const eraser = mode === "eraser" || mode === "eraser-active";
     const active = mode === "pen-active" || mode === "eraser-active";
     const ink = colorValue(colorRef.current);
-    const size = eraser ? Math.max(18, ERASER_RADIUS * 2 * sizeRef.current.w) : 16;
+    const size = eraser ? Math.max(18, 0.035 * 2 * sizeRef.current.w) : 16;
     el.style.display = "block";
     el.style.left = `${point.x * 100}%`;
     el.style.top = `${point.y * 100}%`;
@@ -287,10 +305,24 @@ export function WritingLayer({
     const point = input?.point ?? null;
     const gesture = input?.gesture ?? "none";
 
-    // Fingertip → toolbar hit-test, only while the toolbar is on screen. When two
-    // padded buttons overlap, the nearest centre wins (§4).
+    const merged: { gesture: "index" | "eraser" | "none"; point: WritingPoint | null } = {
+      gesture: gesture as "index" | "eraser" | "none",
+      point,
+    };
+
+    // `selectingFromFrame` reflects last frame's SELECT mode: the toolbar was up
+    // and the presenter had re-raised their index finger to write (so recent state
+    // was "writing" while the toolbar stayed visible). If we were selecting, the
+    // toolbar hit-boxes are ignored and the pen writes underneath them (§5 §7 §11).
+    // Runs BEFORE the hit-test so it gates which items, if any, the fingertip sees.
+    let selectingFromFrame = false as boolean;
+    // Fingertip → toolbar hit-test. Only when the toolbar is on screen AND the
+    // machine is in SELECT mode (not selecting). In selecting mode the presenter
+    // has re-raised the index finger to write, so the toolbar hit-boxes are
+    // deliberately ignored and the pen works underneath them (§5 §7 §11). When two
+    // buttons overlap, the nearest centre wins (§4).
     let hit: WriteMenuItem | null = null;
-    if (toolbarOpenRef.current && point) {
+    if (toolbarOpenRef.current && selectingFromFrame && point) {
       const pad = 0.008;
       let best = Infinity;
       for (const [candidate, r] of itemRectsRef.current) {
@@ -311,7 +343,16 @@ export function WritingLayer({
       }
     }
 
-    const frame = machineRef.current.update({ gesture, point, hit, now });
+    const frame = machineRef.current.update({
+      gesture: merged.gesture,
+      point: merged.point,
+      hit,
+      now,
+    });
+    // Track whether the machine is in SELECT mode this frame so the toolbar
+    // hit-test (run on the next frame, before update) can be withheld while the
+    // presenter is writing with the toolbar visible (§5 §7 §11).
+    selectingFromFrame = frame.toolbarOpen && frame.state === "writing";
 
     for (const effect of frame.effects) {
       switch (effect.kind) {
@@ -328,8 +369,22 @@ export function WritingLayer({
         case "end":
           commitLiveStroke();
           break;
+        case "erase-begin":
+          erasingRef.current = true;
+          eraseRunRef.current = [];
+          break;
         case "erase":
+          // Collect the post-erase survivors for this sweep, so one sweep = one
+          // undo entry (§9 §13).
+          eraseRunRef.current = eraseFromStrokes(strokesRef.current, effect.point, 0.035, nextId);
           applyErase(effect.point);
+          break;
+        case "erase-end":
+          if (erasingRef.current && eraseRunRef.current.length > 0) {
+            onEraseSegmentRef.current(eraseRunRef.current);
+          }
+          erasingRef.current = false;
+          eraseRunRef.current = [];
           break;
         case "select-color":
           onSelectColorRef.current(effect.color);
@@ -339,6 +394,17 @@ export function WritingLayer({
           break;
         case "clear":
           onClearAllRef.current();
+          break;
+        case "undo":
+          onUndoRef.current();
+          break;
+        case "redo":
+          onRedoRef.current();
+          break;
+        case "minimize":
+          machineRef.current.requestMinimize();
+          toolbarOpenRef.current = false;
+          setToolbarOpen(false);
           break;
       }
     }
@@ -369,6 +435,14 @@ export function WritingLayer({
       if (tickRef.current === tick) tickRef.current = null;
     };
   }, [tick, tickRef]);
+
+  const handleMinimizeClick = useCallback(() => {
+    // Same as the gesture-driven Minus: hide the toolbar but keep the armed tool
+    // and colour so the presenter keeps writing with their index finger (§6 §23).
+    machineRef.current.requestMinimize();
+    toolbarOpenRef.current = false;
+    setToolbarOpen(false);
+  }, []);
 
   const setButtonRef = (key: WriteMenuItem) => (node: HTMLButtonElement | null) => {
     if (node) buttonRefs.current.set(key, node);
@@ -408,13 +482,16 @@ export function WritingLayer({
         />
       </div>
 
-      {/* The one writing toolbar (§2): five colours, Manual Eraser, Erase All.
-          Always mounted so the fingertip hit-boxes stay measured; it fades in and
-          out instead of remounting, and gets out of the way after a pick (§11). */}
+      {/* The one writing toolbar (§2): five colours, Manual Eraser, Erase All,
+          Undo, Redo and Minus. Always mounted so the fingertip hit-boxes stay
+          measured; it fades in and out instead of remounting. After a pick it
+          STAYS on screen (§5 §11); the lone index finger can write right under
+          it (selecting mode), and only the MINUS button hides it (§6). INDEX +
+          MIDDLE re-enters select mode and brings it (back) if it was hidden. */}
       <div
         aria-hidden={!toolbarOpen}
-        className={`absolute bottom-[5%] left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-border bg-card/70 px-2.5 py-2 shadow-soft backdrop-blur-md transition-opacity duration-200 ease-out ${
-          toolbarOpen ? "opacity-100" : "opacity-0"
+        className={`absolute bottom-[6%] left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-border bg-card/55 px-2.5 py-2 shadow-soft backdrop-blur-md transition-opacity duration-200 ease-out ${
+          toolbarOpen ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       >
         {toolbarOpen && hovered ? (
@@ -422,6 +499,7 @@ export function WritingLayer({
             {ITEM_LABEL[hovered]}
           </span>
         ) : null}
+
         {WRITING_COLOR_ORDER.map((key) => {
           const isActive = tool === "pen" && key === color;
           const isHovered = key === hovered;
@@ -450,7 +528,7 @@ export function WritingLayer({
         })}
 
         <span aria-hidden="true" className="mx-0.5 h-6 w-px shrink-0 bg-border" />
-        {ERASER_MENU_ITEMS.map((key) => {
+        {(["manual-eraser", "clear-all"] as WriteMenuItem[]).map((key) => {
           const isActive = key === "manual-eraser" && tool === "eraser";
           const isHovered = key === hovered;
           const ringClass = isHovered
@@ -476,6 +554,41 @@ export function WritingLayer({
               ) : (
                 <Trash2 className="h-4 w-4" />
               )}
+              {isHovered ? dwellRing : null}
+            </button>
+          );
+        })}
+
+        <span aria-hidden="true" className="mx-0.5 h-6 w-px shrink-0 bg-border" />
+        {[
+          { key: "undo" as WriteMenuItem, icon: <Undo2 className="h-4 w-4" /> },
+          { key: "redo" as WriteMenuItem, icon: <Redo2 className="h-4 w-4" /> },
+          { key: "minimize" as WriteMenuItem, icon: <Minus className="h-4 w-4" /> },
+        ].map(({ key, icon }) => {
+          const isHovered = key === hovered;
+          const ringClass = isHovered ? "ring-2 ring-amber-500 ring-offset-2 ring-offset-card" : "";
+          return (
+            <button
+              key={key}
+              ref={setButtonRef(key)}
+              type="button"
+              tabIndex={toolbarOpen ? 0 : -1}
+              aria-label={ITEM_LABEL[key]}
+              title={ITEM_LABEL[key]}
+              onClick={
+                key === "undo"
+                  ? () => onUndo()
+                  : key === "redo"
+                    ? () => onRedo()
+                    : key === "minimize"
+                      ? handleMinimizeClick
+                      : undefined
+              }
+              className={`relative grid h-9 w-9 place-items-center rounded-full border border-border bg-secondary text-foreground transition ${
+                toolbarOpen ? "pointer-events-auto" : "pointer-events-none"
+              } ${ringClass}`}
+            >
+              {icon}
               {isHovered ? dwellRing : null}
             </button>
           );
