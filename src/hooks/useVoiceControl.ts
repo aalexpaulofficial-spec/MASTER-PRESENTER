@@ -47,6 +47,8 @@ type UseVoiceControlProps = {
   onClearHighlights: () => void;
   /** Returns false when no slide matches the spoken title. */
   onGoToSlideByText: (text: string) => boolean | void;
+  /** Called when the presenter speaks a LIGHTNING AI command, e.g. "Lightning AI, explain this slide." */
+  onLightningAI?: (question: string) => void;
 };
 
 /**
@@ -347,7 +349,8 @@ type ResolvedCommand =
   | { kind: "highlight"; text: string; color: string }
   | { kind: "removeHighlight"; text: string }
   | { kind: "clearHighlights" }
-  | { kind: "slideByText"; text: string };
+  | { kind: "slideByText"; text: string }
+  | { kind: "lightningAI"; question: string };
 
 /** Lowercase, strip harmless punctuation and collapse whitespace. */
 function normalise(input: string): string {
@@ -489,7 +492,28 @@ const ORDINAL_SLIDE_PHRASE = new RegExp(
  * "this slide has eight points", "please explain slide five", "the next
  * quarter looks strong") resolves to null and executes nothing.
  */
+/**
+ * Detect "lightning ai, <question>" or "lightning ai <question>" at the start
+ * of any utterance. This runs before all other rules so navigation commands
+ * inside a Lightning AI request ("Lightning AI, go to the next slide") are
+ * correctly routed to AI rather than triggering navigation.
+ */
+function resolveLightningAI(raw: string): ResolvedCommand | null {
+  const lower = normalise(raw);
+  // Match: "lightning ai" followed by optional comma/colon, then the question.
+  const m = lower.match(/^lightning\s+a\.?\s*i\.?[,:]?\s+(.+)$/);
+  if (m?.[1]) {
+    const question = m[1].trim();
+    if (question.length > 1) return { kind: "lightningAI", question };
+  }
+  return null;
+}
+
 function resolveCommand(raw: string, allowExtended = true): ResolvedCommand | null {
+  // LIGHTNING AI prefix takes absolute priority — checked before any other rule.
+  const aiCmd = resolveLightningAI(raw);
+  if (aiCmd) return aiCmd;
+
   const normalised = normalise(raw);
   const folded = WHOLE_UTTERANCE_FOLDS[normalised] ?? normalised;
   const lower = canonicalise(folded);
@@ -589,6 +613,9 @@ function commandKey(cmd: ResolvedCommand): string {
       return `removeHighlight:${cmd.text}`;
     case "slideByText":
       return `slideByText:${cmd.text}`;
+    case "lightningAI":
+      // Lightning AI questions are never deduplicated — each ask is independent.
+      return `lightningAI:${Date.now()}`;
     case "next":
     case "prev":
     case "clearHighlights":
@@ -626,6 +653,7 @@ export function useVoiceControl({
   onRemoveHighlight,
   onClearHighlights,
   onGoToSlideByText,
+  onLightningAI,
 }: UseVoiceControlProps) {
   const [supported, setSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -652,6 +680,7 @@ export function useVoiceControl({
     onRemoveHighlight,
     onClearHighlights,
     onGoToSlideByText,
+    onLightningAI,
   });
   callbacksRef.current = {
     onNext,
@@ -661,6 +690,7 @@ export function useVoiceControl({
     onRemoveHighlight,
     onClearHighlights,
     onGoToSlideByText,
+    onLightningAI,
   };
 
   useEffect(() => {
@@ -742,6 +772,12 @@ export function useVoiceControl({
             return true;
           case "slideByText":
             return cb.onGoToSlideByText(cmd.text) === false ? "slide_not_found" : true;
+          case "lightningAI":
+            if (cb.onLightningAI) {
+              cb.onLightningAI(cmd.question);
+              return true;
+            }
+            return false;
         }
       })();
 

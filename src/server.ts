@@ -56,7 +56,144 @@ export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     const url = new URL(request.url);
 
+    // ── LIGHTNING AI ──────────────────────────────────────────────────────────
+    // POST /api/lightning-ai
+    // Body: { question: string; slideText: string; slideTitle: string; intent: string }
+    // Uses Cloudflare Workers AI binding (env.AI). If the binding is absent
+    // (local dev or unconfigured deployment) the endpoint returns 503 so the
+    // frontend shows a clean "unavailable" message rather than crashing.
+
+    if (url.pathname === "/api/lightning-ai" && request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
+    }
+
+    if (url.pathname === "/api/lightning-ai" && request.method === "POST") {
+      const aiEnv = env as Record<string, unknown>;
+      const aiBinding = aiEnv["AI"] as
+        | { run: (model: string, input: unknown) => Promise<unknown> }
+        | undefined;
+
+      if (!aiBinding) {
+        return new Response(
+          JSON.stringify({
+            error: "unavailable",
+            message: "LIGHTNING AI is temporarily unavailable. Please try again.",
+          }),
+          {
+            status: 503,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            },
+          },
+        );
+      }
+
+      try {
+        const body = (await request.json()) as {
+          question?: string;
+          slideText?: string;
+          slideTitle?: string;
+          intent?: string;
+        };
+
+        const question = (body.question ?? "").trim();
+        const slideTitle = (body.slideTitle ?? "").trim();
+        const slideText = (body.slideText ?? "").trim();
+        const intent = (body.intent ?? "general").trim();
+
+        if (!question) {
+          return new Response(JSON.stringify({ error: "question is required" }), {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            },
+          });
+        }
+
+        // Build a tightly-scoped system prompt so LIGHTNING AI always answers
+        // from the actual slide content and never invents slide details.
+        const hasSlideContext = Boolean(slideText || slideTitle);
+        const contextBlock = hasSlideContext
+          ? `CURRENT SLIDE CONTEXT:\nTitle: ${slideTitle || "(no title)"}\nContent: ${slideText || "(no text detected)"}`
+          : "No slide content is available for this request.";
+
+        const intentHint: Record<string, string> = {
+          explain: "Explain the slide content clearly and concisely for the presenter.",
+          summarise: "Summarise the slide content in 2-3 sentences.",
+          keypoints: "List the key points from the slide as bullet points.",
+          notes: "Write brief presenter notes for this slide.",
+          speaker: "Tell the presenter what to say about this slide in 3-5 sentences.",
+          example: "Give one real-world example related to the slide content.",
+          qa: "List 3 questions an audience member might ask about this slide.",
+          answer:
+            "Help the presenter answer the question asked, using the slide content as context.",
+          search: "Based on the slide content provided, confirm if this slide matches the topic.",
+          coach: "Give the presenter 2-3 coaching tips for presenting this slide effectively.",
+          general: "Answer the presenter's question using the slide content as context.",
+        };
+
+        const hint = intentHint[intent] ?? intentHint["general"]!;
+
+        const systemPrompt = `You are LIGHTNING AI, a smart presentation assistant built into Master Presenter.
+Your role is to help the presenter with their CURRENT SLIDE during a live presentation.
+Be concise, clear, and presentation-ready. Never invent slide content.
+${hint}
+If the slide has no content, say so honestly.
+Keep answers under 150 words unless the presenter asks for detail.`;
+
+        const messages = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `${contextBlock}\n\nPRESENTER ASKS: ${question}` },
+        ];
+
+        const result = (await aiBinding.run("@cf/meta/llama-3.1-8b-instruct", {
+          messages,
+          max_tokens: 300,
+          temperature: 0.4,
+        })) as { response?: string } | undefined;
+
+        const answer =
+          typeof (result as any)?.response === "string"
+            ? ((result as any).response as string).trim()
+            : "LIGHTNING AI could not generate a response. Please try again.";
+
+        return new Response(JSON.stringify({ answer }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store",
+          },
+        });
+      } catch (err) {
+        console.error("LIGHTNING AI error:", err);
+        return new Response(
+          JSON.stringify({
+            error: "ai_error",
+            message: "LIGHTNING AI is temporarily unavailable. Please try again.",
+          }),
+          {
+            status: 503,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            },
+          },
+        );
+      }
+    }
+
     // ── Health check ──────────────────────────────────────────────────────────
+
 
     if (url.pathname === "/health" || url.pathname === "/ping") {
       return new Response(

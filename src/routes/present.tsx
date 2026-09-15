@@ -9,7 +9,9 @@ import {
   HelpCircle,
   Maximize,
   Minus,
+  Send,
   UploadCloud,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +29,7 @@ import { WritingLayer, type WriteTick } from "@/components/presenter/WritingLaye
 import { useHandTracking, type IndexFingerPoint } from "@/hooks/useHandTracking";
 import { useVoiceControl, VoiceHighlight } from "@/hooks/useVoiceControl";
 import { usePresentationSession } from "@/hooks/usePresentationSession";
+import { useLightningAI } from "@/hooks/useLightningAI";
 import {
   ERASER_RADIUS,
   eraseFromStrokes,
@@ -115,11 +118,16 @@ function setStoredPlan(plan: string) {
 
 function capabilitiesForPlan(plan: string) {
   const normalized = formatPlanBadge(plan);
+  const isAI = normalized === "MASTER AI";
+  const isWrite = normalized === "MASTER WRITE";
   return {
     hands: true,
     voice: normalized !== "MASTER HAND",
-    laser: normalized !== "MASTER WRITE",
-    writing: normalized === "MASTER WRITE",
+    // Laser works in all plans EXCEPT Master Write (writing takes over index finger)
+    laser: !isWrite && !isAI,
+    // Master Write AND Master AI both enable the writing overlay
+    writing: isWrite || isAI,
+    ai: isAI,
   };
 }
 
@@ -176,6 +184,40 @@ function PresentPage() {
     {},
   );
   const capabilities = capabilitiesForPlan(planName);
+
+  // ── LIGHTNING AI ────────────────────────────────────────────────────────────
+  const { messages: aiMessages, status: aiStatus, ask: askLightningAI } = useLightningAI(
+    metadata,
+    index,
+  );
+  const [aiInput, setAiInput] = useState("");
+  const [aiOpen, setAiOpen] = useState(false);
+  const aiInputRef = useRef<HTMLInputElement | null>(null);
+  const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll AI message list when a new message arrives
+  useEffect(() => {
+    aiMessagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [aiMessages]);
+
+  const submitAIQuestion = useCallback(
+    (q?: string) => {
+      const question = (q ?? aiInput).trim();
+      if (!question) return;
+      setAiInput("");
+      setAiOpen(true);
+      askLightningAI(question);
+    },
+    [aiInput, askLightningAI],
+  );
+
+  const handleVoiceLightningAI = useCallback(
+    (question: string) => {
+      setAiOpen(true);
+      askLightningAI(question);
+    },
+    [askLightningAI],
+  );
 
   const slideCountRef = useRef(slideCount);
   slideCountRef.current = slideCount;
@@ -567,6 +609,7 @@ function PresentPage() {
     onRemoveHighlight: handleRemoveHighlight,
     onClearHighlights: handleClearHighlights,
     onGoToSlideByText: handleGoToSlideByText,
+    onLightningAI: capabilities.ai ? handleVoiceLightningAI : undefined,
   });
 
   // Compact status label — the colour itself is micState. The microphone
@@ -769,9 +812,6 @@ function PresentPage() {
                       Voice not supported in this browser
                     </div>
                   ) : (
-                    // Compact, visual-only status indicator. The microphone
-                    // starts automatically after permission is granted — this
-                    // is NOT a manual mic on/off toggle.
                     <div
                       className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium border transition-colors ${
                         micState === "green"
@@ -795,9 +835,112 @@ function PresentPage() {
                   )}
                 </div>
               )}
+              {/* LIGHTNING AI button — Master AI plan only */}
+              {capabilities.ai && (
+                <Button
+                  variant="outline"
+                  className="border-amber-500/40 bg-amber-500/5 text-amber-600 hover:bg-amber-500/10"
+                  onClick={() => setAiOpen((v) => !v)}
+                >
+                  <Zap className="mr-1 h-4 w-4" /> Lightning AI
+                </Button>
+              )}
               <span className="ml-auto text-xs text-muted-foreground">
                 {slideCount ? `${index + 1} / ${slideCount}` : ""}
               </span>
+            </div>
+          )}
+
+          {/* ── LIGHTNING AI PANEL ────────────────────────────────────────── */}
+          {capabilities.ai && aiOpen && !isFullscreen && (
+            <div className="border-t border-amber-500/20 bg-amber-500/5 px-4 py-3">
+              <div className="mx-auto max-w-2xl">
+                {/* Header */}
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-xs font-semibold text-amber-500">
+                    <Zap className="h-3.5 w-3.5" /> LIGHTNING AI
+                    {aiStatus === "loading" && (
+                      <span className="ml-1 animate-pulse text-amber-400">Thinking…</span>
+                    )}
+                  </span>
+                  <button
+                    onClick={() => setAiOpen(false)}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Message thread */}
+                {aiMessages.length > 0 && (
+                  <div className="mb-3 max-h-44 overflow-y-auto rounded-xl border border-amber-500/15 bg-background/60 p-3 space-y-2">
+                    {aiMessages.map((msg) => (
+                      <div key={msg.id} className={`text-xs leading-relaxed ${
+                        msg.role === "user"
+                          ? "text-muted-foreground"
+                          : "text-foreground"
+                      }`}>
+                        <span className={`font-semibold mr-1 ${
+                          msg.role === "user" ? "text-primary/70" : "text-amber-500"
+                        }`}>
+                          {msg.role === "user" ? "You:" : "Lightning AI:"}
+                        </span>
+                        {msg.text}
+                      </div>
+                    ))}
+                    <div ref={aiMessagesEndRef} />
+                  </div>
+                )}
+
+                {/* Quick actions */}
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {[
+                    { label: "Explain", q: "Explain this slide." },
+                    { label: "Summarise", q: "Summarise this slide." },
+                    { label: "Key Points", q: "Give me the key points." },
+                    { label: "Presenter Notes", q: "Give me presenter notes." },
+                    { label: "What should I say?", q: "What should I say about this slide?" },
+                    { label: "Example", q: "Give me a real-world example." },
+                    { label: "Audience Q&A", q: "What questions might the audience ask?" },
+                    { label: "Coach Me", q: "Coach me on presenting this slide." },
+                  ].map(({ label, q }) => (
+                    <button
+                      key={label}
+                      disabled={aiStatus === "loading"}
+                      onClick={() => submitAIQuestion(q)}
+                      className="rounded-full border border-amber-500/25 bg-background px-2.5 py-1 text-[11px] font-medium text-amber-600 transition-colors hover:bg-amber-500/10 disabled:opacity-40"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Input */}
+                <form
+                  className="flex gap-2"
+                  onSubmit={(e) => { e.preventDefault(); submitAIQuestion(); }}
+                >
+                  <input
+                    ref={aiInputRef}
+                    value={aiInput}
+                    onChange={(e) => setAiInput(e.target.value)}
+                    placeholder="Ask Lightning AI about this slide…"
+                    disabled={aiStatus === "loading"}
+                    className="flex-1 rounded-full border border-amber-500/25 bg-background px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50 disabled:opacity-50"
+                  />
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={!aiInput.trim() || aiStatus === "loading"}
+                    className="rounded-full bg-amber-500 text-white hover:bg-amber-600"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                  </Button>
+                </form>
+                <p className="mt-1.5 text-[10px] text-muted-foreground">
+                  Or say: <span className="italic">"Lightning AI, explain this slide."</span>
+                </p>
+              </div>
             </div>
           )}
         </main>
@@ -881,11 +1024,13 @@ function HowToControl({ planName }: { planName: string }) {
         <DialogHeader>
           <DialogTitle className="font-display">How to Control</DialogTitle>
           <DialogDescription>
-            {capabilities.writing
-              ? "Hand + Voice + Writing Controls"
-              : capabilities.voice
-                ? "Hand + Voice Controls"
-                : "Hand + Camera"}
+            {capabilities.ai
+              ? "Hand + Voice + Writing + Lightning AI Controls"
+              : capabilities.writing
+                ? "Hand + Voice + Writing Controls"
+                : capabilities.voice
+                  ? "Hand + Voice Controls"
+                  : "Hand + Camera"}
           </DialogDescription>
         </DialogHeader>
 
@@ -969,7 +1114,44 @@ function HowToControl({ planName }: { planName: string }) {
             </p>
           </div>
         )}
-      </DialogContent>
+          {capabilities.ai && (
+            <div className="mt-4 rounded-2xl border border-amber-500/25 bg-amber-500/5 p-4">
+              <p className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-500">
+                <Zap className="h-4 w-4" /> Lightning AI
+              </p>
+              <p className="mb-3 text-xs text-muted-foreground">
+                LIGHTNING AI reads your actual slide content and answers questions in real time.
+                Click <strong>Lightning AI</strong> in the control bar, or just say it:
+              </p>
+              <ul className="space-y-1.5">
+                {[
+                  "Lightning AI, explain this slide.",
+                  "Lightning AI, summarize this slide.",
+                  "Lightning AI, give me the key points.",
+                  "Lightning AI, what should I say?",
+                  "Lightning AI, give me presenter notes.",
+                  "Lightning AI, give me a real-world example.",
+                  "Lightning AI, what questions might the audience ask?",
+                  "Lightning AI, help me answer this question.",
+                  "Lightning AI, find the slide about [topic].",
+                  "Lightning AI, coach me on this slide.",
+                ].map((ex) => (
+                  <li key={ex} className="flex items-start gap-2 text-xs">
+                    <span className="mt-0.5 shrink-0 rounded-md border border-amber-500/20 bg-background px-2 py-0.5 font-mono text-[10px] text-amber-600">
+                      voice
+                    </span>
+                    <span className="italic text-muted-foreground">"{ex}"</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                LIGHTNING AI uses your actual slide text — no fake answers. It runs asynchronously
+                and never blocks hand tracking, voice navigation, Master Write, laser or fullscreen.
+                Quick action buttons are also available in the Lightning AI panel.
+              </p>
+            </div>
+          )}
+        </DialogContent>
     </Dialog>
   );
 }
