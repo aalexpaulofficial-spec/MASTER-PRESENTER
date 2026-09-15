@@ -972,24 +972,27 @@ function Pricing() {
       price: "$0",
       note: "/ month",
       freeLabel: "",
-      copy: "Hands + Voice + Writing + AI presentation control.",
+      copy: "Hands + Camera + Laser + Voice + Writing + AI — the complete presenter experience.",
       cta: "Start presenting free",
       link: "/present" as const,
       search: { plan: "Master AI", pro: true } as Record<string, unknown>,
-      badge: null,
+      badge: "LIGHTNING AI",
       highlight: false,
+      hasAIPreview: true,
       trialNote: "Unlimited",
       features: [
         "Everything in Master Write",
-        "AI presentation assistance",
-        "Presentation Q&A",
-        "Slide understanding",
-        "Semantic slide search",
-        "AI slide summaries",
-        "AI presenter notes",
-        "Speaker assistance",
-        "Presentation coaching",
-        "Future AI-ready capabilities",
+        "LIGHTNING AI assistant on every slide",
+        "AI reads your actual slide content",
+        "Ask any question about your slide",
+        "Get key points for any slide instantly",
+        "AI summary of any slide",
+        "Pronunciation guide for hard words",
+        "Audience Q&A help — AI suggests answers",
+        "Follow-up question support",
+        "No hardcoded responses — real slide context",
+        "AI runs async — never blocks hand/voice",
+        "Original PPT/PPTX is never modified",
       ],
     },
     {
@@ -1034,7 +1037,7 @@ function Pricing() {
                 <h3 className="font-display text-lg font-semibold">{t.name}</h3>
                 {t.badge && (
                   <span
-                    className={`rounded-full px-3 py-1 text-[10px] sm:text-[11px] font-medium tracking-wide ${t.name === "Master Write" ? "bg-indigo-500/10 text-indigo-500 border border-indigo-500/20" : "bg-primary text-primary-foreground"}`}
+                    className={`rounded-full px-3 py-1 text-[10px] sm:text-[11px] font-medium tracking-wide ${t.name === "Master Write" ? "bg-indigo-500/10 text-indigo-500 border border-indigo-500/20" : t.name === "Master AI" ? "bg-amber-500/10 text-amber-500 border border-amber-500/20" : "bg-primary text-primary-foreground"}`}
                   >
                     {t.badge}
                   </span>
@@ -1130,6 +1133,27 @@ function Pricing() {
                     <p>Toolbar stays visible while writing; MINUS hides it</p>
                     <p className="font-semibold text-foreground">
                       No Laser Pointer in Master Write
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {(t as any).hasAIPreview && (
+                <div className="relative mt-5 overflow-hidden rounded-xl border border-amber-500/25 bg-amber-500/5 p-4">
+                  <div className="absolute right-0 top-0 p-2 opacity-10">
+                    <Zap className="h-10 w-10 text-amber-500" />
+                  </div>
+                  <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-amber-500">
+                    <Zap className="h-4 w-4" /> LIGHTNING AI
+                  </h4>
+                  <div className="space-y-1.5 text-[11px] text-muted-foreground">
+                    <p className="font-semibold text-foreground/80">Ask about your current slide:</p>
+                    <p className="italic">"What are the key points here?"</p>
+                    <p className="italic">"Summarise this slide for me."</p>
+                    <p className="italic">"How do I pronounce this word?"</p>
+                    <p className="italic">"Someone asked X — help me answer."</p>
+                    <p className="mt-2 text-[10px] font-medium text-amber-500/80">
+                      AI reads your actual slide content — no generic answers.
                     </p>
                   </div>
                 </div>
