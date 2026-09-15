@@ -337,6 +337,24 @@ export class WriteGestureMachine {
     this.justPicked = false;
   }
 
+  /** Shows the toolbar on demand without dropping the armed tool. */
+  requestOpen(): void {
+    this.finishActive([]);
+    this.toolbarOpen = true;
+    this.selecting = false;
+    this.hovered = null;
+    this.hoverStart = 0;
+    this.justPicked = false;
+    this.anchor = null;
+    this.anchorAt = 0;
+    this.moveFrom = null;
+    this.lastMoveAt = 0;
+    this.settledOnce = true;
+    this.settleFrom = null;
+    this.settleAt = 0;
+    this.state = !this.armed ? "select" : "ready";
+  }
+
   /** Arms a color directly (e.g. on mouse click) without resetting toolbar state. */
   armColor(_color: WritingColor): void {
     this.tool = "pen";

@@ -44,6 +44,8 @@ type Props = {
   onEraseSegment: (segment: WritingStroke[]) => void;
   onUndo: () => void;
   onRedo: () => void;
+  /** Allows parent control buttons to toggle toolbar visibility cleanly. */
+  toggleToolbarRef?: MutableRefObject<(() => void) | null>;
 };
 
 /** Names shown while the fingertip dwells on a toolbar item. */
@@ -114,6 +116,7 @@ export function WritingLayer({
   onEraseSegment,
   onUndo,
   onRedo,
+  toggleToolbarRef,
 }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -445,6 +448,28 @@ export function WritingLayer({
     toolbarOpenRef.current = false;
     setToolbarOpen(false);
   }, []);
+
+  const toggleToolbar = useCallback(() => {
+    if (toolbarOpenRef.current) {
+      machineRef.current.requestMinimize();
+      toolbarOpenRef.current = false;
+      setToolbarOpen(false);
+    } else {
+      machineRef.current.requestOpen();
+      toolbarOpenRef.current = true;
+      setToolbarOpen(true);
+      measureToolbar();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (toggleToolbarRef) {
+      toggleToolbarRef.current = toggleToolbar;
+      return () => {
+        if (toggleToolbarRef.current === toggleToolbar) toggleToolbarRef.current = null;
+      };
+    }
+  }, [toggleToolbar, toggleToolbarRef]);
 
   const setButtonRef = (key: WriteMenuItem) => (node: HTMLButtonElement | null) => {
     if (node) buttonRefs.current.set(key, node);

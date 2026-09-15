@@ -183,6 +183,7 @@ function PresentPage() {
   const stageWrapRef = useRef<HTMLDivElement | null>(null);
   // WritingLayer fills this so the camera loop can push fingertip samples into it.
   const writeTickRef = useRef<WriteTick | null>(null);
+  const toggleToolbarRef = useRef<(() => void) | null>(null);
   const eraseIdRef = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileRef = useRef<File | null>(null);
@@ -391,14 +392,8 @@ function PresentPage() {
   // Minimize hides the bar but keeps the armed tool + colour; reopen re-enters
   // select mode (§6 §7 §11). Mirrors the on-screen Minus button.
   const toggleFullFromWriting = useCallback(() => {
-    // The on-screen Minus (and the gesture) drive the toolbar through the
-    // WriteGestureMachine inside WritingLayer. Re-open the toolbar by feeding
-    // the camera path a deliberate INDEX + MIDDLE raise sequence.
-    handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" });
-    setTimeout(() => handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" }), 10);
-    setTimeout(() => handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" }), 20);
-    setTimeout(() => handleIndexPoint({ slide: { x: 0.5, y: 0.5 }, mode: "eraser" }), 30);
-  }, [handleIndexPoint]);
+    toggleToolbarRef.current?.();
+  }, []);
 
   useEffect(() => {
     const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -727,6 +722,7 @@ function PresentPage() {
                       onEraseSegment={eraseSegment}
                       onUndo={undoWriting}
                       onRedo={redoWriting}
+                      toggleToolbarRef={toggleToolbarRef}
                     />
                   ) : undefined
                 }

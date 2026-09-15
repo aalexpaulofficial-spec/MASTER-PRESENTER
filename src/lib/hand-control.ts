@@ -96,10 +96,10 @@ export function mapToSlide(
   const mx = 1 - x;
   const my = y;
 
-  const gain = 1.70;
+  const gain = 1.85;
   const aspectFactor = (cameraAspect || 4 / 3) / (slideAspect || 16 / 9);
   const nx = 0.5 + (mx - 0.5) * gain * aspectFactor;
-  const ny = 0.5 + (my - 0.48) * gain;
+  const ny = 0.5 + (my - 0.5) * gain;
 
   return {
     x: Math.min(1, Math.max(0, nx)),
