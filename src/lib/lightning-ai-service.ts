@@ -33,17 +33,17 @@ export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
 export const FALLBACK_GEMINI_MODEL = "gemini-flash-latest";
 
 const INTENT_HINTS: Record<string, string> = {
-  explain: "Explain the current slide clearly and concisely for the presenter.",
-  summarise: "Summarise the current slide content in 2-3 clear, impactful sentences.",
-  keypoints: "Extract and list the key points from this slide as concise bullet points.",
-  notes: "Write brief, practical presenter notes with cues for this slide.",
-  speaker: "Tell the presenter exactly what to say about this slide in 3-5 natural, spoken sentences.",
-  example: "Give one concrete, relevant real-world example directly illustrating this slide's topic.",
-  qa: "List 3 likely questions an audience member might ask about this slide, along with concise answers.",
+  explain: "Explain the current slide clearly and thoroughly. Cover the main concept, why it matters, and any key details visible in the slide content.",
+  summarise: "Summarise the current slide content fully. Cover all the main points so the presenter understands everything on the slide.",
+  keypoints: "Extract and list ALL the key points from this slide as clear, complete bullet points. Do not skip any important point.",
+  notes: "Write complete, practical presenter notes for this slide. Include speaking cues, what to emphasise, and what to avoid. Cover the full slide.",
+  speaker: "Write a complete natural presenter script for this slide — everything the presenter should say, in natural spoken language, covering the full slide content.",
+  example: "Give a clear, concrete, relevant real-world example that directly illustrates this slide's topic. Explain why it connects to the slide.",
+  qa: "List the most likely questions an audience member might ask about this slide AND provide a clear, useful answer for each question.",
   answer: "Help the presenter answer the question asked, using the slide content as context.",
   search: "Identify the slide that best matches the topic requested by the presenter.",
-  coach: "Give the presenter 2-3 actionable coaching tips for presenting this specific slide effectively.",
-  general: "Answer the presenter's question using the slide content as context.",
+  coach: "Give the presenter complete, practical coaching advice on how to present this specific slide effectively. Include tips on pacing, emphasis, audience engagement, and delivery.",
+  general: "Answer the presenter's question thoroughly using the slide content as context.",
 };
 
 /** Helper to read environment variables from env object, process.env, or .env files */
@@ -93,7 +93,7 @@ export async function processLightningAI(
   const slideText = (req.slideText ?? "").trim();
   const speakerNotes = (req.speakerNotes ?? "").trim();
   const intent = (req.intent ?? "general").trim();
-  const hint = INTENT_HINTS[intent] ?? INTENT_HINTS.general;
+  const hint = INTENT_HINTS[intent] ?? INTENT_HINTS["general"] ?? "";
 
   const slideNumStr =
     typeof req.slideIndex === "number"
@@ -109,13 +109,22 @@ ${slideText || "(no text on slide)"}
 ${speakerNotes ? `Speaker Notes: ${speakerNotes}\n` : ""}`
     : "No slide content is available for this request.";
 
-  const systemPrompt = `You are LIGHTNING AI, an intelligent presentation assistant built into Master Presenter by LIGHTNING ATI.
-Your role is to help the presenter with their presentation and CURRENT SLIDE during a live presentation.
-Be concise, professional, clear, and presentation-ready. Ground your responses strictly in the provided slide content.
-Never invent facts or details not present in the slide unless asked for an example or coaching.
-${hint}
-If the slide has no text or content, let the presenter know politely.
-Keep answers clear and direct (under 150 words) so they can be read or referenced quickly while presenting.`;
+  const systemPrompt = `You are LIGHTNING AI, a presentation assistant built into Master Presenter by LIGHTNING ATI.
+
+Your job is to help the presenter understand and deliver the currently selected slide.
+
+RULES:
+- Always use the provided CURRENT SLIDE CONTEXT as your primary source.
+- Answer specifically about the current slide. Do not invent slide content or pretend to see information that was not provided.
+- Never return a truncated or incomplete answer. Always complete your full response.
+- When useful, structure answers with clear headings and bullet points so the presenter can scan them quickly.
+- For presenter requests ("What should I say?", "Presenter Notes"), give natural language that can be spoken aloud.
+- For audience questions, provide BOTH the likely questions AND useful answers.
+- For coaching, give practical, actionable presentation advice.
+- If the slide content is insufficient to answer something fully, clearly say what information is missing rather than guessing.
+- Be professional, clear, and thorough. Do not cut answers short.
+
+${hint}`;
 
   const envObj = (env as Record<string, unknown>) ?? {};
 
@@ -159,7 +168,7 @@ Keep answers clear and direct (under 150 words) so they can be read or reference
             contents,
             generationConfig: {
               temperature: 0.4,
-              maxOutputTokens: 400,
+              maxOutputTokens: 800,
             },
           }),
         });
@@ -207,7 +216,7 @@ Keep answers clear and direct (under 150 words) so they can be read or reference
 
       const result = (await aiBinding.run("@cf/meta/llama-3.1-8b-instruct", {
         messages,
-        max_tokens: 350,
+        max_tokens: 800,
         temperature: 0.4,
       })) as { response?: string } | undefined;
 
@@ -248,7 +257,7 @@ Keep answers clear and direct (under 150 words) so they can be read or reference
         body: JSON.stringify({
           model: "gpt-4o-mini",
           messages,
-          max_tokens: 350,
+          max_tokens: 800,
           temperature: 0.4,
         }),
       });

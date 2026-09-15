@@ -47,8 +47,7 @@ type UseVoiceControlProps = {
   onClearHighlights: () => void;
   /** Returns false when no slide matches the spoken title. */
   onGoToSlideByText: (text: string) => boolean | void;
-  /** Called when the presenter speaks a LIGHTNING AI command, e.g. "Lightning AI, explain this slide." */
-  onLightningAI?: (question: string) => void;
+  onLightningAI?: ((question: string) => void) | undefined;
 };
 
 /**

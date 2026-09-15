@@ -68,6 +68,7 @@ function findMatchingSlide(
 
   for (let i = 0; i < metadata.length; i++) {
     const s = metadata[i];
+    if (!s) continue;
     const title = (s.title ?? "").toLowerCase();
     const content = buildSlideText(s).toLowerCase();
     let score = 0;
@@ -84,7 +85,7 @@ function findMatchingSlide(
   }
 
   return bestIndex >= 0 && maxScore > 0
-    ? { slide: metadata[bestIndex], index: bestIndex }
+    ? { slide: metadata[bestIndex]!, index: bestIndex }
     : null;
 }
 

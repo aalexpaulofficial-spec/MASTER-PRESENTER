@@ -186,7 +186,7 @@ function PresentPage() {
   const capabilities = capabilitiesForPlan(planName);
 
   // ── LIGHTNING AI ────────────────────────────────────────────────────────────
-  const { messages: aiMessages, status: aiStatus, ask: askLightningAI } = useLightningAI(
+  const { messages: aiMessages, status: aiStatus, ask: askLightningAI, clearMessages: clearAiMessages } = useLightningAI(
     metadata,
     index,
     setIndex,
@@ -195,6 +195,12 @@ function PresentPage() {
   const [aiOpen, setAiOpen] = useState(false);
   const aiInputRef = useRef<HTMLInputElement | null>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Clear stale AI answers when the presenter moves to a different slide
+  // so old context never leaks into the new slide's responses.
+  useEffect(() => {
+    clearAiMessages();
+  }, [index]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll AI message list when a new message arrives
   useEffect(() => {
@@ -874,7 +880,7 @@ function PresentPage() {
 
                 {/* Message thread */}
                 {aiMessages.length > 0 && (
-                  <div className="mb-3 max-h-44 overflow-y-auto rounded-xl border border-amber-500/15 bg-background/60 p-3 space-y-2">
+                  <div className="mb-3 max-h-80 overflow-y-auto rounded-xl border border-amber-500/15 bg-background/60 p-3 space-y-3">
                     {aiMessages.map((msg) => (
                       <div key={msg.id} className={`text-xs leading-relaxed ${
                         msg.role === "user"
@@ -886,7 +892,26 @@ function PresentPage() {
                         }`}>
                           {msg.role === "user" ? "You:" : "Lightning AI:"}
                         </span>
-                        {msg.text}
+                        {msg.role === "assistant" ? (
+                          <span
+                            className="whitespace-pre-wrap"
+                            dangerouslySetInnerHTML={{
+                              __html: msg.text
+                                // Bold: **text**
+                                .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+                                // Italic: *text*
+                                .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>")
+                                // Headings: ## Heading
+                                .replace(/^#{1,3}\s+(.+)$/gm, "<strong class='block mt-2 mb-0.5'>$1</strong>")
+                                // Bullet points: - item or * item
+                                .replace(/^[\-\*]\s+(.+)$/gm, "<span class='flex gap-1'><span class='text-amber-500 shrink-0'>•</span><span>$1</span></span>")
+                                // Numbered list: 1. item
+                                .replace(/^(\d+)\.\s+(.+)$/gm, "<span class='flex gap-1'><span class='text-amber-500 shrink-0 font-mono'>$1.</span><span>$2</span></span>")
+                            }}
+                          />
+                        ) : (
+                          <span>{msg.text}</span>
+                        )}
                       </div>
                     ))}
                     <div ref={aiMessagesEndRef} />
