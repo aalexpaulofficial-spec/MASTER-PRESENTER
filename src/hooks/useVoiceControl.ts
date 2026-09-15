@@ -493,23 +493,51 @@ const ORDINAL_SLIDE_PHRASE = new RegExp(
  * quarter looks strong") resolves to null and executes nothing.
  */
 /**
- * Detect "lightning ai, <question>" or "lightning ai <question>" at the start
- * of any utterance. This runs before all other rules so navigation commands
- * inside a Lightning AI request ("Lightning AI, go to the next slide") are
- * correctly routed to AI rather than triggering navigation.
+ * Detect "lightning ai, <question>", "lightning, <question>", or natural
+ * slide AI inquiries ("explain this slide", "what should I say", etc.).
+ * Standard navigation commands ("next slide", "previous", "slide 4") are preserved.
  */
-function resolveLightningAI(raw: string): ResolvedCommand | null {
+export function resolveLightningAI(raw: string): ResolvedCommand | null {
   const lower = normalise(raw);
-  // Match: "lightning ai" followed by optional comma/colon, then the question.
-  const m = lower.match(/^lightning\s+a\.?\s*i\.?[,:]?\s+(.+)$/);
+
+  // Match: "lightning ai, <question>", "lightning <question>", "hey lightning ai, <question>"
+  const m = lower.match(/^(?:(?:hey|hi|ok|okay)\s+)?lightning(?:\s+a\.?\s*i\.?)?[,:]?\s+(.+)$/);
   if (m?.[1]) {
     const question = m[1].trim();
     if (question.length > 1) return { kind: "lightningAI", question };
   }
+
+  // Natural direct AI requests without prefix (interpret "this" as current slide)
+  if (/^(?:please\s+)?(?:can you\s+)?explain\s+(?:this(?:\s+slide)?|the\s+slide)$/.test(lower)) {
+    return { kind: "lightningAI", question: "Explain this slide." };
+  }
+  if (/^(?:please\s+)?(?:can you\s+)?(?:summarise|summarize)\s+(?:this(?:\s+slide)?|the\s+slide)$/.test(lower)) {
+    return { kind: "lightningAI", question: "Summarise this slide." };
+  }
+  if (/^(?:what should i say|what do i say|what can i say)(?:\s+about (?:this|this slide))?$/.test(lower)) {
+    return { kind: "lightningAI", question: "What should I say about this slide?" };
+  }
+  if (/^(?:give me\s+)?(?:the\s+)?key points(?:\s+(?:for|of)\s+(?:this|this slide))?$/.test(lower)) {
+    return { kind: "lightningAI", question: "Give me the key points." };
+  }
+  if (/^(?:give me\s+)?(?:a\s+)?(?:real[\s-]world\s+)?example(?:\s+(?:for|of)\s+(?:this|this slide))?$/.test(lower)) {
+    return { kind: "lightningAI", question: "Give me a real-world example." };
+  }
+  if (/^(?:give me\s+)?presenter notes(?:\s+(?:for|of)\s+(?:this|this slide))?$/.test(lower)) {
+    return { kind: "lightningAI", question: "Give me presenter notes." };
+  }
+  if (/^(?:coach me|give me coaching)(?:\s+on\s+(?:this|this slide))?$/.test(lower)) {
+    return { kind: "lightningAI", question: "Coach me on presenting this slide." };
+  }
+  const searchMatch = lower.match(/^(?:find|search for)\s+(?:the\s+)?slide\s+(?:about|on)\s+(.+)$/);
+  if (searchMatch?.[1]) {
+    return { kind: "lightningAI", question: `Find the slide about ${searchMatch[1].trim()}` };
+  }
+
   return null;
 }
 
-function resolveCommand(raw: string, allowExtended = true): ResolvedCommand | null {
+export function resolveCommand(raw: string, allowExtended = true): ResolvedCommand | null {
   // LIGHTNING AI prefix takes absolute priority — checked before any other rule.
   const aiCmd = resolveLightningAI(raw);
   if (aiCmd) return aiCmd;

@@ -189,6 +189,7 @@ function PresentPage() {
   const { messages: aiMessages, status: aiStatus, ask: askLightningAI } = useLightningAI(
     metadata,
     index,
+    setIndex,
   );
   const [aiInput, setAiInput] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
@@ -443,10 +444,10 @@ function PresentPage() {
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  // Pro: read the uploaded deck's text boxes in the browser so voice
-  // highlighting targets the real slide content. The file is never modified.
+  // Extract uploaded deck's text boxes in the browser so voice highlighting
+  // and LIGHTNING AI target the real slide content. The file is never modified.
   useEffect(() => {
-    if (!capabilities.voice || !buffer || metadata !== null) return;
+    if ((!capabilities.voice && !capabilities.ai) || !buffer || metadata !== null) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -460,7 +461,7 @@ function PresentPage() {
     return () => {
       cancelled = true;
     };
-  }, [capabilities.voice, buffer, metadata]);
+  }, [capabilities.voice, capabilities.ai, buffer, metadata]);
 
   const handleHighlight = useCallback(
     (text: string, color: string) => {

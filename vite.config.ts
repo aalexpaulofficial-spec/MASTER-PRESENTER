@@ -13,6 +13,7 @@ import {
   recordSessionEnd,
   recordDownload,
 } from "./src/lib/cumulative-stats";
+import { processLightningAI } from "./src/lib/lightning-ai-service";
 
 function liveStatsDevPlugin(): Plugin {
   return {
@@ -20,6 +21,46 @@ function liveStatsDevPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
         const url = req.url?.split("?")[0];
+
+        if (url === "/api/lightning-ai" && req.method === "OPTIONS") {
+          res.statusCode = 204;
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+          res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+          res.end();
+          return;
+        }
+
+        if (url === "/api/lightning-ai" && req.method === "POST") {
+          let body = "";
+          req.on("data", (chunk: any) => {
+            body += chunk;
+          });
+          req.on("end", async () => {
+            try {
+              const data = body ? JSON.parse(body) : {};
+              const result = await processLightningAI(data, process.env);
+              res.statusCode = 200;
+              res.setHeader("Content-Type", "application/json");
+              res.setHeader("Access-Control-Allow-Origin", "*");
+              res.end(JSON.stringify(result));
+            } catch (err: any) {
+              console.error("[dev] LIGHTNING AI error:", err);
+              const msg = err?.message || "LIGHTNING AI is temporarily unavailable. Please try again.";
+              const isConfigErr = msg.includes("not configured");
+              res.statusCode = isConfigErr ? 503 : 500;
+              res.setHeader("Content-Type", "application/json");
+              res.setHeader("Access-Control-Allow-Origin", "*");
+              res.end(
+                JSON.stringify({
+                  error: isConfigErr ? "not_configured" : "ai_error",
+                  message: msg,
+                }),
+              );
+            }
+          });
+          return;
+        }
 
         if ((url === "/api/stats" || url === "/stats/cumulative") && req.method === "GET") {
           try {

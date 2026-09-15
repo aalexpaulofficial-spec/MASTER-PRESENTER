@@ -1,6 +1,7 @@
 /**
- * useLightningAI — calls /api/lightning-ai with the presenter's question
- * and the current slide's extracted text, then surfaces the AI response.
+ * useLightningAI — calls /api/lightning-ai with the presenter's question,
+ * current slide context (slide number, total slides, title, text, notes),
+ * and conversation history for follow-up questions.
  *
  * Fully async: never blocks hand tracking, voice control, Master Write,
  * laser pointer or slide navigation.
@@ -18,23 +19,23 @@ export type LightningAIMessage = {
 };
 
 /** Infer an intent keyword from the question text. */
-function detectIntent(question: string): string {
+export function detectIntent(question: string): string {
   const q = question.toLowerCase();
+  if (/find.*slide|which slide|slide about|search for slide/.test(q)) return "search";
   if (/explain|what (does|is)|describe/.test(q)) return "explain";
   if (/summar/.test(q)) return "summarise";
   if (/key point|main point|bullet/.test(q)) return "keypoints";
-  if (/presenter note|note/.test(q)) return "notes";
+  if (/presenter note|speaker note|\bnote\b/.test(q)) return "notes";
   if (/what should i say|what do i say|how should i present/.test(q)) return "speaker";
   if (/example|real.world|illustrat/.test(q)) return "example";
   if (/question.*(audience|ask|might)|audience.*question/.test(q)) return "qa";
-  if (/answer|respond|help me/.test(q)) return "answer";
-  if (/find.*slide|which slide|slide about|search/.test(q)) return "search";
+  if (/answer|respond|help me answer/.test(q)) return "answer";
   if (/coach|tip|advice|improve/.test(q)) return "coach";
   return "general";
 }
 
 /** Build a flat text summary of the current slide for the AI. */
-function buildSlideText(slide: SlideText | undefined | null): string {
+export function buildSlideText(slide: SlideText | undefined | null): string {
   if (!slide) return "";
   const parts: string[] = [];
   for (const el of slide.text_elements ?? []) {
@@ -42,6 +43,49 @@ function buildSlideText(slide: SlideText | undefined | null): string {
     if (t) parts.push(t);
   }
   return parts.join("\n");
+}
+
+/** Search all slides for a topic keyword. */
+function findMatchingSlide(
+  metadata: SlideText[] | null,
+  query: string,
+): { slide: SlideText; index: number } | null {
+  if (!metadata || metadata.length === 0) return null;
+
+  // Extract topic after "about", "find", "search", "slide"
+  const m = query.match(/(?:about|for|on)\s+([^?.!]+)/i) || query.match(/(?:find|search)\s+(?:the\s+)?(?:slide\s+)?([^?.!]+)/i);
+  const rawTopic = (m?.[1] ?? query).trim();
+
+  const words = rawTopic
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !/^(the|about|slide|which|find|show|for|and|please)$/.test(w));
+
+  if (words.length === 0) return null;
+
+  let bestIndex = -1;
+  let maxScore = 0;
+
+  for (let i = 0; i < metadata.length; i++) {
+    const s = metadata[i];
+    const title = (s.title ?? "").toLowerCase();
+    const content = buildSlideText(s).toLowerCase();
+    let score = 0;
+
+    for (const w of words) {
+      if (title.includes(w)) score += 6;
+      if (content.includes(w)) score += 2;
+    }
+
+    if (score > maxScore) {
+      maxScore = score;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex >= 0 && maxScore > 0
+    ? { slide: metadata[bestIndex], index: bestIndex }
+    : null;
 }
 
 export type UseLightningAIReturn = {
@@ -57,6 +101,8 @@ export function useLightningAI(
   metadata: SlideText[] | null,
   /** Zero-based index of the current slide. */
   slideIndex: number,
+  /** Optional callback to navigate to a slide (used for semantic slide search). */
+  onNavigateToSlide?: (targetIndex: number) => void,
 ): UseLightningAIReturn {
   const [messages, setMessages] = useState<LightningAIMessage[]>([]);
   const [status, setStatus] = useState<LightningAIStatus>("idle");
@@ -72,11 +118,6 @@ export function useLightningAI(
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const currentSlide = metadata?.[slideIndex] ?? null;
-      const slideText = buildSlideText(currentSlide);
-      const slideTitle = currentSlide?.title ?? "";
-      const intent = detectIntent(q);
-
       const userMsg: LightningAIMessage = {
         id: Math.random().toString(36).slice(2),
         role: "user",
@@ -86,20 +127,68 @@ export function useLightningAI(
       setMessages((prev) => [...prev, userMsg]);
       setStatus("loading");
 
+      const intent = detectIntent(q);
+
+      // Handle Semantic Slide Search immediately if presentation has slides
+      if (intent === "search" && metadata && metadata.length > 0) {
+        const match = findMatchingSlide(metadata, q);
+        if (match) {
+          if (typeof onNavigateToSlide === "function") {
+            onNavigateToSlide(match.index);
+          }
+          const slideTitleText = match.slide.title ? ` ("${match.slide.title}")` : "";
+          const assistantMsg: LightningAIMessage = {
+            id: Math.random().toString(36).slice(2),
+            role: "assistant",
+            text: `Found Slide ${match.index + 1}${slideTitleText}. Navigated directly to slide ${match.index + 1}.`,
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
+          setStatus("done");
+          return;
+        }
+      }
+
+      const currentSlide = metadata?.[slideIndex] ?? null;
+      const slideText = buildSlideText(currentSlide);
+      const slideTitle = currentSlide?.title ?? "";
+      const speakerNotes = (currentSlide as any)?.notes ?? "";
+      const totalSlides = metadata?.length ?? 0;
+
+      // Collect recent conversation history for natural follow-ups
+      const history = messages.slice(-6).map((m) => ({
+        role: m.role,
+        content: m.text,
+      }));
+
       void fetch("/api/lightning-ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, slideText, slideTitle, intent }),
+        body: JSON.stringify({
+          question: q,
+          slideText,
+          slideTitle,
+          slideIndex,
+          totalSlides,
+          speakerNotes,
+          intent,
+          history,
+        }),
         signal: controller.signal,
       })
         .then(async (res) => {
-          const json = (await res.json()) as { answer?: string; message?: string; error?: string };
+          const json = (await res.json().catch(() => ({}))) as {
+            answer?: string;
+            message?: string;
+            error?: string;
+          };
           if (controller.signal.aborted) return;
 
           const text =
             json.answer ??
             json.message ??
-            "LIGHTNING AI is temporarily unavailable. Please try again.";
+            (res.ok
+              ? "No response generated."
+              : "LIGHTNING AI is temporarily unavailable. Please try again.");
 
           const assistantMsg: LightningAIMessage = {
             id: Math.random().toString(36).slice(2),
@@ -120,7 +209,7 @@ export function useLightningAI(
           setStatus("error");
         });
     },
-    [metadata, slideIndex],
+    [metadata, slideIndex, messages, onNavigateToSlide],
   );
 
   const clearMessages = useCallback(() => {

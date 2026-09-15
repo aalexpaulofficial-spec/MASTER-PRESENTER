@@ -16,9 +16,11 @@ dist-ssr
 .nitro
 *.local
 
-# Wrangler / Cloudflare
-.wrangler/
+# Environment & Secrets
+.env
+.env.*
 .dev.vars
+.wrangler/
 
 # Editor directories and files
 .vscode/*
