@@ -1,16 +1,15 @@
 /**
  * Lightning AI Service
  *
- * Provides inference for LIGHTNING AI in Master Presenter.
- * Architecture:
- * 1. Primary: Cloudflare Workers AI native binding (env.AI) using @cf/meta/llama-3.1-8b-instruct
- * 2. Fallback: Google Gemini REST API (GEMINI_API_KEY)
- * 3. Fallback: OpenAI REST API (OPENAI_API_KEY)
- * 4. Fallback: Cloudflare Workers AI REST API (CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
+ * Backend AI engine for LIGHTNING AI in Master Presenter (by LIGHTNING ATI).
+ * V1 Implementation: Powered by Google Gemini (e.g. gemini-3.6-flash / gemini-flash-latest).
  *
- * Never exposes secrets to frontend JavaScript.
- * Validates responses, supports conversation history for natural follow-ups,
- * and passes current slide context (slide number, title, text, speaker notes).
+ * Architecture:
+ * - Server-side only: API keys are NEVER exposed to client JavaScript.
+ * - Reads GEMINI_API_KEY from server environment variables / .env.
+ * - Context-aware: Auto-injects current slide number, title, text, and speaker notes.
+ * - Conversation memory: Preserves recent turns for natural follow-ups ("Make it simpler").
+ * - Fallbacks: Cloudflare Workers AI binding (env.AI) or OpenAI if configured.
  */
 
 export interface LightningAIRequest {
@@ -29,11 +28,15 @@ export interface LightningAIResult {
   provider?: string;
 }
 
+/** Centralized model configuration */
+export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
+export const FALLBACK_GEMINI_MODEL = "gemini-flash-latest";
+
 const INTENT_HINTS: Record<string, string> = {
   explain: "Explain the current slide clearly and concisely for the presenter.",
-  summarise: "Summarise the current slide content in 2-3 concise sentences.",
-  keypoints: "Extract and list the key points from this slide as clear bullet points.",
-  notes: "Write brief, practical presenter notes for this slide.",
+  summarise: "Summarise the current slide content in 2-3 clear, impactful sentences.",
+  keypoints: "Extract and list the key points from this slide as concise bullet points.",
+  notes: "Write brief, practical presenter notes with cues for this slide.",
   speaker: "Tell the presenter exactly what to say about this slide in 3-5 natural, spoken sentences.",
   example: "Give one concrete, relevant real-world example directly illustrating this slide's topic.",
   qa: "List 3 likely questions an audience member might ask about this slide, along with concise answers.",
@@ -42,6 +45,40 @@ const INTENT_HINTS: Record<string, string> = {
   coach: "Give the presenter 2-3 actionable coaching tips for presenting this specific slide effectively.",
   general: "Answer the presenter's question using the slide content as context.",
 };
+
+/** Helper to read environment variables from env object, process.env, or .env files */
+function resolveEnvKey(key: string, envObj?: Record<string, unknown>): string | undefined {
+  if (envObj && typeof envObj[key] === "string" && envObj[key]) {
+    return envObj[key] as string;
+  }
+  if (typeof process !== "undefined" && process.env?.[key]) {
+    return process.env[key];
+  }
+  // Try reading local .env file in Node runtime if process.env wasn't pre-populated
+  if (typeof process !== "undefined" && typeof require !== "undefined") {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require("fs");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const path = require("path");
+      for (const file of [".env", ".dev.vars", ".env.local"]) {
+        const fullPath = path.resolve(process.cwd(), file);
+        if (fs.existsSync(fullPath)) {
+          const content = fs.readFileSync(fullPath, "utf8");
+          const match = content.match(new RegExp(`^${key}\\s*=\\s*(.+)$`, "m"));
+          if (match?.[1]) {
+            const val = match[1].trim().replace(/^["']|["']$/g, "");
+            process.env[key] = val;
+            return val;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return undefined;
+}
 
 export async function processLightningAI(
   req: LightningAIRequest,
@@ -66,7 +103,7 @@ export async function processLightningAI(
   const hasSlideContext = Boolean(slideText || slideTitle || speakerNotes);
   const contextBlock = hasSlideContext
     ? `CURRENT SLIDE CONTEXT:
-${slideNumStr ? `Position: ${slideNumStr}\n` : ""}Title: ${slideTitle || "(no title)"}
+${slideNumStr ? `Location: ${slideNumStr}\n` : ""}Title: ${slideTitle || "(no title)"}
 Content:
 ${slideText || "(no text on slide)"}
 ${speakerNotes ? `Speaker Notes: ${speakerNotes}\n` : ""}`
@@ -80,33 +117,94 @@ ${hint}
 If the slide has no text or content, let the presenter know politely.
 Keep answers clear and direct (under 150 words) so they can be read or referenced quickly while presenting.`;
 
-  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-    { role: "system", content: systemPrompt },
-  ];
+  const envObj = (env as Record<string, unknown>) ?? {};
 
-  // Include recent conversation history for natural follow-ups ("Make it simpler", "Give me an example")
-  if (Array.isArray(req.history)) {
-    for (const h of req.history.slice(-6)) {
-      if ((h.role === "user" || h.role === "assistant") && h.content?.trim()) {
-        messages.push({ role: h.role, content: h.content.trim() });
+  // ── 1. Google Gemini (V1 Primary Engine) ──────────────────────────────────
+  const geminiKey = resolveEnvKey("GEMINI_API_KEY", envObj);
+  if (geminiKey) {
+    const configuredModel = resolveEnvKey("GEMINI_MODEL", envObj) || DEFAULT_GEMINI_MODEL;
+    const modelsToTry = [
+      configuredModel,
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+      FALLBACK_GEMINI_MODEL,
+    ].filter((v, i, a) => a.indexOf(v) === i);
+
+    // Format conversation history for Gemini contents array
+    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+    if (Array.isArray(req.history)) {
+      for (const h of req.history.slice(-6)) {
+        if (h.content?.trim()) {
+          contents.push({
+            role: h.role === "assistant" ? "model" : "user",
+            parts: [{ text: h.content.trim() }],
+          });
+        }
+      }
+    }
+    contents.push({
+      role: "user",
+      parts: [{ text: `${contextBlock}\n\nPRESENTER ASKS: ${question}` }],
+    });
+
+    for (const model of modelsToTry) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(12000),
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemPrompt }] },
+            contents,
+            generationConfig: {
+              temperature: 0.4,
+              maxOutputTokens: 400,
+            },
+          }),
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as {
+            candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+          };
+          const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          if (text) {
+            return { answer: text, provider: `gemini (${model})` };
+          }
+        } else {
+          const errText = await res.text();
+          console.warn(`[LIGHTNING AI] Gemini model ${model} returned ${res.status}, trying fallback...`);
+          // Continue to next model in loop if 503/404/429
+        }
+      } catch (geminiErr) {
+        console.warn(`[LIGHTNING AI] Gemini error with ${model}:`, geminiErr);
       }
     }
   }
 
-  messages.push({
-    role: "user",
-    content: `${contextBlock}\n\nPRESENTER ASKS: ${question}`,
-  });
-
-  const envObj = (env as Record<string, unknown>) ?? {};
-
-  // ── 1. Cloudflare Workers AI native binding (env.AI) ───────────────────────
+  // ── 2. Cloudflare Workers AI binding (env.AI) fallback ───────────────────
   const aiBinding = envObj["AI"] as
     | { run: (model: string, input: unknown) => Promise<unknown> }
     | undefined;
 
   if (aiBinding && typeof aiBinding.run === "function") {
     try {
+      const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+        { role: "system", content: systemPrompt },
+      ];
+      if (Array.isArray(req.history)) {
+        for (const h of req.history.slice(-6)) {
+          if ((h.role === "user" || h.role === "assistant") && h.content?.trim()) {
+            messages.push({ role: h.role, content: h.content.trim() });
+          }
+        }
+      }
+      messages.push({
+        role: "user",
+        content: `${contextBlock}\n\nPRESENTER ASKS: ${question}`,
+      });
+
       const result = (await aiBinding.run("@cf/meta/llama-3.1-8b-instruct", {
         messages,
         max_tokens: 350,
@@ -122,70 +220,25 @@ Keep answers clear and direct (under 150 words) so they can be read or reference
     }
   }
 
-  // Helper to read env var from envObj or process.env
-  const getEnvVar = (key: string): string | undefined => {
-    if (typeof envObj[key] === "string" && envObj[key]) return envObj[key] as string;
-    if (typeof process !== "undefined" && process.env?.[key]) return process.env[key];
-    return undefined;
-  };
-
-  // ── 2. Google Gemini REST API ─────────────────────────────────────────────
-  const geminiKey = getEnvVar("GEMINI_API_KEY");
-  if (geminiKey) {
+  // ── 3. OpenAI REST API fallback ──────────────────────────────────────────
+  const openaiKey = resolveEnvKey("OPENAI_API_KEY", envObj);
+  if (openaiKey) {
     try {
-      const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+      const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+        { role: "system", content: systemPrompt },
+      ];
       if (Array.isArray(req.history)) {
         for (const h of req.history.slice(-6)) {
-          if (h.content?.trim()) {
-            contents.push({
-              role: h.role === "assistant" ? "model" : "user",
-              parts: [{ text: h.content.trim() }],
-            });
+          if ((h.role === "user" || h.role === "assistant") && h.content?.trim()) {
+            messages.push({ role: h.role, content: h.content.trim() });
           }
         }
       }
-      contents.push({
+      messages.push({
         role: "user",
-        parts: [{ text: `${contextBlock}\n\nPRESENTER ASKS: ${question}` }],
+        content: `${contextBlock}\n\nPRESENTER ASKS: ${question}`,
       });
 
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: systemPrompt }] },
-            contents,
-            generationConfig: {
-              temperature: 0.4,
-              maxOutputTokens: 350,
-            },
-          }),
-        },
-      );
-
-      if (res.ok) {
-        const data = (await res.json()) as {
-          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-        };
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (text) {
-          return { answer: text, provider: "gemini" };
-        }
-      } else {
-        const errText = await res.text();
-        console.error(`[LIGHTNING AI] Gemini API returned ${res.status}:`, errText);
-      }
-    } catch (geminiErr) {
-      console.error("[LIGHTNING AI] Gemini request error:", geminiErr);
-    }
-  }
-
-  // ── 3. OpenAI REST API ────────────────────────────────────────────────────
-  const openaiKey = getEnvVar("OPENAI_API_KEY");
-  if (openaiKey) {
-    try {
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -217,44 +270,12 @@ Keep answers clear and direct (under 150 words) so they can be read or reference
     }
   }
 
-  // ── 4. Cloudflare Workers AI REST API ─────────────────────────────────────
-  const cfToken = getEnvVar("CLOUDFLARE_API_TOKEN");
-  const cfAccountId = getEnvVar("CLOUDFLARE_ACCOUNT_ID");
-  if (cfToken && cfAccountId) {
-    try {
-      const res = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/ai/run/@cf/meta/llama-3.1-8b-instruct`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${cfToken}`,
-          },
-          body: JSON.stringify({
-            messages,
-            max_tokens: 350,
-            temperature: 0.4,
-          }),
-        },
-      );
-
-      if (res.ok) {
-        const data = (await res.json()) as { result?: { response?: string } };
-        const text = data.result?.response?.trim();
-        if (text) {
-          return { answer: text, provider: "cloudflare-rest" };
-        }
-      } else {
-        const errText = await res.text();
-        console.error(`[LIGHTNING AI] Cloudflare REST returned ${res.status}:`, errText);
-      }
-    } catch (cfRestErr) {
-      console.error("[LIGHTNING AI] Cloudflare REST error:", cfRestErr);
-    }
+  // ── Missing configuration ────────────────────────────────────────────────
+  if (!geminiKey && !aiBinding && !openaiKey) {
+    throw new Error(
+      "LIGHTNING AI is not configured. Please set GEMINI_API_KEY in your environment, or deploy with Cloudflare Workers AI binding.",
+    );
   }
 
-  // If no AI provider succeeded or none was configured, return an actionable, honest error.
-  throw new Error(
-    "LIGHTNING AI is not configured. Please set GEMINI_API_KEY, OPENAI_API_KEY, or deploy with Cloudflare Workers AI binding.",
-  );
+  throw new Error("LIGHTNING AI is temporarily unavailable. Please try again.");
 }
