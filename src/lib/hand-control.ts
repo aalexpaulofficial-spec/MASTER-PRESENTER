@@ -5,12 +5,7 @@
 
 export type Landmark = { x: number; y: number; z: number };
 export type Gesture =
-  | "none"
-  | "fist"
-  | "open-palm-front"
-  | "open-palm-back"
-  | "pointing"
-  | "two-fingers";
+  "none" | "fist" | "open-palm-front" | "open-palm-back" | "pointing" | "two-fingers";
 
 const WRIST = 0;
 const INDEX_MCP = 5;
@@ -80,52 +75,94 @@ export function classifyGesture(lm: Landmark[], handedness: string): Gesture {
 }
 
 /**
- * Maps a normalised fingertip coordinate from the camera frame onto the full slide
- * area. The comfortable movement range of a hand covers only the middle of the
- * frame, so that active window is stretched to the complete 0..1 slide range and
- * the horizontal axis is un-mirrored.
+ * Maps the actual index-fingertip (MediaPipe landmark 8) from the camera frame onto
+ * the full slide area, accounting for the selfie mirror and the camera's aspect ratio
+ * matched to the presentation's aspect ratio. The fingertip is the ONLY thing
+ * that drives the writing position — never the wrist, palm centre or a hand box.
+ *
+ * Isotropic coordinate transformation: 1 cm of hand travel in any direction in air
+ * corresponds to the same distance on the slide, eliminating ellipse distortion on
+ * circles and diagonal tilt. Reaches all four corners (top-left, top-right, bottom-left,
+ * bottom-right) and center without artificial dead zones.
  */
-export function mapToSlide(x: number, y: number) {
-  const ax = 0.14;
-  const ay = 0.12;
-  const nx = (1 - x - ax) / (1 - ax * 2);
-  const ny = (y - ay) / (1 - ay * 2);
+export function mapToSlide(
+  x: number,
+  y: number,
+  cameraAspect = 4 / 3,
+  slideAspect = 16 / 9,
+) {
+  // Mirror correction: the preview is shown mirrored, but the raw landmark sits in the
+  // un-mirrored camera frame, so flipping X makes "move right" mean "right".
+  const mx = 1 - x;
+  const my = y;
+
+  const gain = 1.70;
+  const aspectFactor = (cameraAspect || 4 / 3) / (slideAspect || 16 / 9);
+  const nx = 0.5 + (mx - 0.5) * gain * aspectFactor;
+  const ny = 0.5 + (my - 0.48) * gain;
+
   return {
     x: Math.min(1, Math.max(0, nx)),
     y: Math.min(1, Math.max(0, ny)),
   };
 }
 
-/** Low-latency one-euro-style smoothing: fast when moving, steady when still. */
+/** Low-latency one-euro-style smoothing: fast when moving, steady when still, with outlier spike rejection. */
 export class PointSmoother {
   private px = 0;
   private py = 0;
   private started = false;
+  private outlierCandidate: { x: number; y: number } | null = null;
+  private outlierCount = 0;
   private readonly base: number;
   private readonly gain: number;
   private readonly max: number;
+  private readonly maxJump: number;
 
-  // Defaults reproduce the original laser feel exactly, so Master Hand / Master
-  // Voice are untouched. Master Write passes a higher base + gain so ink tracks
-  // the fingertip with far less lag (§4 low-latency requirement).
-  constructor(base = 0.34, gain = 9, max = 0.9) {
+  constructor(base = 0.34, gain = 9, max = 0.9, maxJump = 0.22) {
     this.base = base;
     this.gain = gain;
     this.max = max;
+    this.maxJump = maxJump;
   }
 
   reset() {
     this.started = false;
+    this.outlierCandidate = null;
+    this.outlierCount = 0;
   }
 
-  next(x: number, y: number) {
+  next(x: number, y: number): { x: number; y: number } {
     if (!this.started) {
       this.px = x;
       this.py = y;
       this.started = true;
+      this.outlierCandidate = null;
+      this.outlierCount = 0;
       return { x, y };
     }
-    const speed = Math.hypot(x - this.px, y - this.py);
+
+    const dist = Math.hypot(x - this.px, y - this.py);
+
+    // Outlier protection: reject impossible 1-frame tracking spikes
+    if (dist > this.maxJump) {
+      if (this.outlierCount === 0) {
+        this.outlierCandidate = { x, y };
+        this.outlierCount = 1;
+        return { x: this.px, y: this.py };
+      }
+      // If movement is sustained across consecutive frames, re-anchor cleanly
+      this.px = x;
+      this.py = y;
+      this.outlierCandidate = null;
+      this.outlierCount = 0;
+      return { x, y };
+    }
+
+    this.outlierCandidate = null;
+    this.outlierCount = 0;
+
+    const speed = dist;
     const alpha = Math.min(this.max, this.base + speed * this.gain);
     this.px += (x - this.px) * alpha;
     this.py += (y - this.py) * alpha;

@@ -31,6 +31,7 @@ type Options = {
   onPointer: (point: { x: number; y: number } | null) => void;
   pointerMode?: "laser" | "writing";
   onIndexPoint?: (point: IndexFingerPoint | null) => void;
+  slideAspect?: number;
 };
 
 export function useHandTracking({
@@ -39,6 +40,7 @@ export function useHandTracking({
   onPointer,
   pointerMode = "laser",
   onIndexPoint,
+  slideAspect = 16 / 9,
 }: Options) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [status, setStatus] = useState<CameraStatus>("idle");
@@ -50,10 +52,12 @@ export function useHandTracking({
   const pointerRef = useRef(onPointer);
   const indexPointRef = useRef(onIndexPoint);
   const pointerModeRef = useRef(pointerMode);
+  const slideAspectRef = useRef(slideAspect);
   actionRef.current = onAction;
   pointerRef.current = onPointer;
   indexPointRef.current = onIndexPoint;
   pointerModeRef.current = pointerMode;
+  slideAspectRef.current = slideAspect;
 
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => {
@@ -62,6 +66,11 @@ export function useHandTracking({
     setAttempt((a) => a + 1);
   }, []);
 
+  // Re-acquired tracking must not leak listeners or streams. The whole loop lives
+  // inside this effect, which tears down (cancels the rAF, closes the landmarker,
+  // stops every track and clears srcObject) on cleanup — and `attempt` is the only
+  // thing that re-runs it, so React StrictMode / re-entrancy can't double-mount it
+  // (§17 camera reconnect, no duplicate loops / leaks).
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
@@ -71,11 +80,9 @@ export function useHandTracking({
       detectForVideo: (v: HTMLVideoElement, t: number) => unknown;
       close: () => void;
     } | null = null;
+    // Master Hand / Master Voice use the original laser smoother. Master Write gets a
+    // near-passthrough smoother: a little jitter removal, no visible lag (§8 low-latency).
     const smoother = new PointSmoother();
-    // Master Write needs the ink to sit right under the fingertip, so it gets its
-    // own near-passthrough smoother: enough to take the shake off a raw landmark,
-    // not enough to trail behind a fast stroke (§8). The laser keeps the original
-    // smoother untouched, so Master Hand and Master Voice are unchanged.
     const writeSmoother = new PointSmoother(0.82, 16, 1);
     const gate = new GestureGate();
     let lastTs = -1;
@@ -129,6 +136,8 @@ export function useHandTracking({
         setStatus("live");
 
         const loop = () => {
+          // Drive detection from rAF so we never re-render React per camera frame;
+          // only refs are touched, keeping the fingertip→ink path at display latency (§8).
           raf = requestAnimationFrame(loop);
 
           if (
@@ -141,6 +150,8 @@ export function useHandTracking({
 
           const el = videoRef.current;
           if (!el || !landmarker || el.readyState < 2) return;
+          // Skip a frame only if the video clock hasn't advanced — this throttles to the
+          // camera's true rate instead of hammering detectForVideo with duplicate timestamps.
           const ts = el.currentTime * 1000;
           if (ts === lastTs) return;
           lastTs = ts;
@@ -168,12 +179,32 @@ export function useHandTracking({
           setGesture(g);
 
           const writing = pointerModeRef.current === "writing";
-          // Landmark 8 is the INDEX FINGERTIP — never the wrist, the palm centre
-          // or a hand bounding box. Everything downstream follows this point (§7).
+          // Landmark 8 is the ACTUAL INDEX FINGERTIP — never wrist / palm centre / bound
+          // box. Every coordinate downstream is this point, so the cursor and ink sit
+          // exactly under the physical finger (§3 §7). If MediaPipe ever emits a clearly
+          // impossible value, discard it rather than drawing a giant stray line (§16).
           const tip = lm[8];
+          if (
+            !tip ||
+            !isFinite(tip.x) ||
+            !isFinite(tip.y) ||
+            tip.x < -0.5 ||
+            tip.x > 1.5 ||
+            tip.y < -0.5 ||
+            tip.y > 1.5
+          ) {
+            writeSmoother.reset();
+            pointerRef.current(null);
+            indexPointRef.current?.(null);
+            return;
+          }
+
+          const camAspect =
+            el.videoWidth && el.videoHeight ? el.videoWidth / el.videoHeight : 4 / 3;
+          const sAspect = slideAspectRef.current || 16 / 9;
 
           if (g === "pointing" && tip) {
-            const mapped = mapToSlide(tip.x, tip.y);
+            const mapped = mapToSlide(tip.x, tip.y, camAspect, sAspect);
             if (writing) {
               // A lone index finger drives the writing cursor. It never feeds the
               // laser (§13), and raising it does not start a stroke by itself —
@@ -193,7 +224,7 @@ export function useHandTracking({
             // Index + middle re-opens the writing toolbar. The fingertip it reports
             // is still landmark 8, tracked just as tightly as the pen (§7 §9).
             smoother.reset();
-            const mapped = mapToSlide(tip.x, tip.y);
+            const mapped = mapToSlide(tip.x, tip.y, camAspect, sAspect);
             const s = writeSmoother.next(mapped.x, mapped.y);
             pointerRef.current(null);
             indexPointRef.current?.({ slide: s, mode: "eraser" });
@@ -233,6 +264,8 @@ export function useHandTracking({
       stream?.getTracks().forEach((t) => t.stop());
       const el = videoRef.current;
       if (el) el.srcObject = null;
+      pointerRef.current(null);
+      indexPointRef.current?.(null);
     };
   }, [enabled, attempt]);
 

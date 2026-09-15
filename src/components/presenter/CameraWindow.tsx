@@ -67,7 +67,17 @@ export function CameraWindow({
   return (
     <div
       className="fixed z-40 select-none"
-      style={{ left: pos.x, top: pos.y, display: hidden ? "none" : undefined }}
+      style={{
+        left: pos.x,
+        top: pos.y,
+        ...(hidden
+          ? {
+              opacity: 0,
+              pointerEvents: "none" as const,
+              transform: "scale(0)",
+            }
+          : {}),
+      }}
     >
       <div className="overflow-hidden rounded-2xl border border-border bg-card/95 shadow-soft backdrop-blur">
         <div
@@ -91,7 +101,11 @@ export function CameraWindow({
           </button>
         </div>
 
-        <div className={`relative h-[132px] w-[232px] bg-secondary ${minimized ? "hidden" : ""}`}>
+        <div
+          className={`relative w-[232px] bg-secondary transition-all ${
+            minimized ? "h-0 opacity-0 pointer-events-none overflow-hidden" : "h-[132px]"
+          }`}
+        >
           <video
             ref={videoRef}
             autoPlay

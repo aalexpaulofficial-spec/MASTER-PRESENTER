@@ -222,7 +222,7 @@ export const WRITE_TIMINGS = {
    * inside `activateMs` for a stroke to start. Small enough to feel immediate,
    * big enough that a parked finger is a cursor and nothing else.
    */
-  activateDist: 0.012,
+  activateDist: 0.008,
   activateMs: 220,
   /** Holding still this long lifts the pen again, without lowering the finger. */
   idleEndMs: 400,
@@ -236,8 +236,8 @@ export const WRITE_TIMINGS = {
    * once the fingertip has held inside `settleDist` for `settleMs` — which is
    * what arriving somewhere looks like. Short enough to feel immediate.
    */
-  settleMs: 140,
-  settleDist: 0.01,
+  settleMs: 100,
+  settleDist: 0.02,
   /** A tracking blink shorter than this never breaks a stroke (§6). */
   lostMs: 160,
   /** Frames an index<->index+middle switch must hold before it counts (§12 §10). */
@@ -337,6 +337,20 @@ export class WriteGestureMachine {
     this.justPicked = false;
   }
 
+  /** Arms a color directly (e.g. on mouse click) without resetting toolbar state. */
+  armColor(_color: WritingColor): void {
+    this.tool = "pen";
+    this.armed = true;
+    this.selecting = false;
+  }
+
+  /** Arms a tool directly (e.g. manual-eraser) without resetting toolbar state. */
+  armTool(tool: WriteTool): void {
+    this.tool = tool;
+    this.armed = true;
+    this.selecting = false;
+  }
+
   update(sample: WriteSample): WriteFrame {
     const effects: WriteEffect[] = [];
     this.now = sample.now;
@@ -405,10 +419,12 @@ export class WriteGestureMachine {
     // Selecting mode (toolbar up, but the presenter has re-raised the index finger
     // to write): the fingertip is the pen again, NOT a toolbar selector, so we
     // skip the hover path above and fall through to writing/erasing (§5 §7 §11).
+    // INDEX FINGER ONLY writes — INDEX + MIDDLE never writes (§1 §5).
     if (this.selecting) {
       if (!this.armed) return this.frame(effects, point);
-      if (this.tool === "pen") return this.handleWrite(effects, point, sample.now);
-      return this.handleErase(effects, point, sample.now);
+      if (gesture === "index" && this.tool === "pen") return this.handleWrite(effects, point, sample.now);
+      if (gesture === "index" && this.tool === "eraser") return this.handleErase(effects, point, sample.now);
+      return this.frame(effects, point);
     }
 
     // Without a tool armed the fingertip is only a cursor — and with no toolbar
@@ -417,8 +433,10 @@ export class WriteGestureMachine {
       return this.frame(effects, point);
     }
     if (!this.armed) return this.frame(effects, point);
-    if (this.tool === "pen") return this.handleWrite(effects, point, sample.now);
-    return this.handleErase(effects, point, sample.now);
+    // INDEX FINGER ONLY writes/erases — INDEX + MIDDLE never writes.
+    if (gesture === "index" && this.tool === "pen") return this.handleWrite(effects, point, sample.now);
+    if (gesture === "index" && this.tool === "eraser") return this.handleErase(effects, point, sample.now);
+    return this.frame(effects, point);
   }
 
   /**

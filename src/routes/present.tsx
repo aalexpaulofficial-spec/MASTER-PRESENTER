@@ -243,28 +243,19 @@ function PresentPage() {
           return `e${eraseIdRef.current}`;
         });
         if (next === strokes) return prev;
-        const hist = historyRef.current;
-        const slide = (hist[index] ??= { undo: [], redo: [] });
-        slide.undo.push(snapshot(strokes));
-        slide.redo = [];
         return { ...prev, [index]: next };
       });
     },
-    [index, snapshot],
+    [index],
   );
 
-  // A whole Manual Eraser sweep arrives as one replacement overlay, so it is a
-  // single undo entry — never the per-point erase events (§9 §13).
+  // A whole Manual Eraser sweep is bracketed by erase-begin / erase-end so it is one undo entry (§9 §13).
   const eraseSegment = useCallback(
-    (segment: WritingStroke[]) => {
-      setWritingBySlide((prev) => {
-        const strokes = prev[index] ?? [];
-        const hist = historyRef.current;
-        const entry = (hist[index] ??= { undo: [], redo: [] });
-        entry.undo.push(snapshot(strokes));
-        entry.redo = [];
-        return { ...prev, [index]: segment };
-      });
+    (beforeSnapshot: WritingStroke[]) => {
+      const hist = historyRef.current;
+      const entry = (hist[index] ??= { undo: [], redo: [] });
+      entry.undo.push(snapshot(beforeSnapshot));
+      entry.redo = [];
     },
     [index, snapshot],
   );
@@ -315,12 +306,15 @@ function PresentPage() {
     [capabilities.writing],
   );
 
+  const [slideAspect, setSlideAspect] = useState<number>(16 / 9);
+
   const { videoRef, status, error, gesture, handVisible, retry } = useHandTracking({
     enabled: phase === "preview" || phase === "ready",
     onAction,
     onPointer: setPointer,
     pointerMode: capabilities.writing ? "writing" : "laser",
     onIndexPoint: handleIndexPoint,
+    slideAspect,
   });
 
   // If the camera drops out mid-stroke, close any open writing cleanly.
@@ -356,11 +350,25 @@ function PresentPage() {
     setBuffer(buf);
   }, []);
 
-  const onReady = useCallback(({ slideCount: count }: { slideCount: number }) => {
-    setSlideCount(count);
-    setProgress(100);
-    setPhase("ready");
-  }, []);
+  const onReady = useCallback(
+    ({
+      slideCount: count,
+      width,
+      height,
+    }: {
+      slideCount: number;
+      width?: number;
+      height?: number;
+    }) => {
+      setSlideCount(count);
+      if (width && height && height > 0) {
+        setSlideAspect(width / height);
+      }
+      setProgress(100);
+      setPhase("ready");
+    },
+    [],
+  );
 
   const onDeckError = useCallback((message: string) => {
     setFailure(message);
@@ -851,16 +859,19 @@ function HowToControl({ planName }: { planName: string }) {
       : []),
   ];
   const writingSteps = [
-    "1. Raise INDEX + MIDDLE fingers together to open the Master Write toolbar: 5 writing colors, Manual Eraser, Erase All, Undo, Redo and Minus. It fires once per raise — lower your hand to neutral, then raise again to toggle.",
-    "2. Use your INDEX finger to select one of the 5 colors: dwell the fingertip on the color for a moment. The color becomes active and the toolbar stays visible.",
-    "3. Move your lone INDEX finger to write — the ink follows the fingertip in real time, right under the tip. Holding still simply lifts the pen.",
-    "4. The toolbar stays visible while you write. Use it at any time to pick another color, the Manual Eraser, or Erase All.",
-    "5. Click MINUS to minimize the toolbar — your color stays armed and you keep writing with your index finger.",
-    "6. Continue writing while minimized. Raise INDEX + MIDDLE again to reopen the toolbar.",
-    "7. Use Manual Eraser to erase Master Write marks under the fingertip; Erase All clears writing on the current slide only. Original PPT/PPTX is never touched.",
-    "8. Use Undo and Redo to correct writing, per slide.",
-    "9. Writing stays separate for each slide; your original PPT/PPTX is never modified.",
-    "10. Master Write has NO Laser Pointer — the 5 colors are writing colors only.",
+    "Raise INDEX + MIDDLE to open the toolbar.",
+    "Use INDEX to select one of 5 colors.",
+    "Move INDEX FINGER to write.",
+    "Toolbar stays visible while writing.",
+    "Click MINUS to minimize the toolbar.",
+    "Continue writing while minimized.",
+    "Raise INDEX + MIDDLE again to reopen the toolbar.",
+    "Use Manual Eraser to erase selected marks.",
+    "Use Erase All to clear writing on the current slide.",
+    "Use Undo and Redo to correct writing.",
+    "Writing remains separate for each slide.",
+    "Original PPT/PPTX is never modified.",
+    "Master Write has NO Laser Pointer.",
   ];
 
   return (
@@ -907,7 +918,7 @@ function HowToControl({ planName }: { planName: string }) {
           </ul>
           <p className="mt-3 rounded-lg bg-primary-soft/50 px-3 py-2 text-xs text-muted-foreground">
             {capabilities.writing
-              ? "In Master Write, raise INDEX + MIDDLE to open the toolbar — once per raise: lower your hand to neutral, then raise again to toggle. The toolbar stays visible while you write; MINUS minimizes it but you keep writing. A lone index finger selects a color by dwelling, then writes by moving. INDEX + MIDDLE again reopens it. Eraser, Erase All, Undo and Redo live in the toolbar. No laser pointer, ever."
+              ? "In Master Write, raise INDEX + MIDDLE to open the toolbar — it triggers once per raise (return to neutral before toggling again). Use INDEX to select a color, then move your INDEX finger to write directly under your fingertip. The toolbar stays visible while you write; click MINUS to minimize it while continuing to write. Raise INDEX + MIDDLE again to reopen. Manual Eraser, Erase All, Undo and Redo are in the toolbar. Writing is per-slide and your original presentation is never modified. Master Write has NO Laser Pointer."
               : "The laser pointer works only from your hand - a raised index finger. It is never triggered by voice."}
           </p>
         </div>
@@ -958,11 +969,7 @@ function HowToControl({ planName }: { planName: string }) {
               ))}
             </ol>
             <p className="mt-3 rounded-lg bg-primary-soft/50 px-3 py-2 text-xs text-muted-foreground">
-              Remember the rhythm: INDEX + MIDDLE opens the tools, INDEX selects a color, INDEX
-              movement writes, MINUS hides the tools, INDEX + MIDDLE opens them again. The gesture
-              fires once per raise — return your hand to neutral between toggles. The toolbar stays
-              visible while you write. No laser pointer in Master Write. Writing and erasing are a
-              frontend overlay — your original PPT/PPTX is never modified.
+              Remember the rhythm: INDEX + MIDDLE to open tools, INDEX to select a color, INDEX movement to write, MINUS to hide tools, and INDEX + MIDDLE to open tools again. Manual Eraser, Erase All, Undo and Redo are always available in the toolbar. The gesture fires once per raise — return to neutral between toggles. No laser pointer in Master Write. Writing and erasing are a frontend overlay — your original PPT/PPTX is never modified.
             </p>
           </div>
         )}

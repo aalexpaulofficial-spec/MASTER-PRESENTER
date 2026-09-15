@@ -15,7 +15,7 @@ type Props = {
   /** Frontend-only annotation layer, rendered inside the slide box so it scales with it. */
   overlay?: ReactNode;
   highlights?: VoiceHighlight[];
-  onReady: (info: { slideCount: number }) => void;
+  onReady: (info: { slideCount: number; width?: number; height?: number }) => void;
   onError: (message: string) => void;
 };
 
@@ -67,7 +67,7 @@ export function DeckStage({
         previewer.renderSingleSlide(0);
         previewerRef.current = previewer;
         setDims({ w, h });
-        readyRef.current({ slideCount });
+        readyRef.current({ slideCount, width: w, height: h });
       } catch {
         if (!cancelled) {
           errorRef.current(

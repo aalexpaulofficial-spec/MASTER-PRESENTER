@@ -134,6 +134,8 @@ export function WritingLayer({
   const toolbarOpenRef = useRef(false);
   const hoveredRef = useRef<WriteMenuItem | null>(null);
   const toolRef = useRef<WriteTool>("pen");
+  const isWritingRef = useRef(false);
+  const eraseBeforeRef = useRef<WritingStroke[] | null>(null);
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [hovered, setHovered] = useState<WriteMenuItem | null>(null);
   const [tool, setTool] = useState<WriteTool>("pen");
@@ -227,6 +229,8 @@ export function WritingLayer({
     liveRef.current = null;
     erasingRef.current = false;
     eraseRunRef.current = [];
+    eraseBeforeRef.current = null;
+    isWritingRef.current = false;
     toolbarOpenRef.current = false;
     hoveredRef.current = null;
     toolRef.current = "pen";
@@ -310,20 +314,16 @@ export function WritingLayer({
       point,
     };
 
-    // `selectingFromFrame` reflects last frame's SELECT mode: the toolbar was up
-    // and the presenter had re-raised their index finger to write (so recent state
-    // was "writing" while the toolbar stayed visible). If we were selecting, the
-    // toolbar hit-boxes are ignored and the pen writes underneath them (§5 §7 §11).
-    // Runs BEFORE the hit-test so it gates which items, if any, the fingertip sees.
-    let selectingFromFrame = false as boolean;
-    // Fingertip → toolbar hit-test. Only when the toolbar is on screen AND the
-    // machine is in SELECT mode (not selecting). In selecting mode the presenter
-    // has re-raised the index finger to write, so the toolbar hit-boxes are
-    // deliberately ignored and the pen works underneath them (§5 §7 §11). When two
-    // buttons overlap, the nearest centre wins (§4).
+    // Fingertip → toolbar hit-test. Only when the toolbar is on screen, the gesture
+    // is INDEX FINGER, and we are NOT actively drawing/erasing a stroke.
+    // When writing on the slide, toolbar hit-boxes are ignored so the pen writes
+    // anywhere. When two buttons overlap, the nearest centre wins.
     let hit: WriteMenuItem | null = null;
-    if (toolbarOpenRef.current && selectingFromFrame && point) {
-      const pad = 0.008;
+    if (toolbarOpenRef.current && !isWritingRef.current && merged.gesture === "index" && point) {
+      if (itemRectsRef.current.size === 0) {
+        measureToolbar();
+      }
+      const pad = 0.01;
       let best = Infinity;
       for (const [candidate, r] of itemRectsRef.current) {
         if (
@@ -349,10 +349,12 @@ export function WritingLayer({
       hit,
       now,
     });
-    // Track whether the machine is in SELECT mode this frame so the toolbar
-    // hit-test (run on the next frame, before update) can be withheld while the
-    // presenter is writing with the toolbar visible (§5 §7 §11).
-    selectingFromFrame = frame.toolbarOpen && frame.state === "writing";
+
+    isWritingRef.current =
+      frame.state === "writing" ||
+      frame.state === "erasing" ||
+      liveRef.current !== null ||
+      erasingRef.current;
 
     for (const effect of frame.effects) {
       switch (effect.kind) {
@@ -371,20 +373,20 @@ export function WritingLayer({
           break;
         case "erase-begin":
           erasingRef.current = true;
-          eraseRunRef.current = [];
+          eraseBeforeRef.current = strokesRef.current.map((s) => ({
+            ...s,
+            points: s.points.map((p) => ({ ...p })),
+          }));
           break;
         case "erase":
-          // Collect the post-erase survivors for this sweep, so one sweep = one
-          // undo entry (§9 §13).
-          eraseRunRef.current = eraseFromStrokes(strokesRef.current, effect.point, 0.035, nextId);
           applyErase(effect.point);
           break;
         case "erase-end":
-          if (erasingRef.current && eraseRunRef.current.length > 0) {
-            onEraseSegmentRef.current(eraseRunRef.current);
+          if (erasingRef.current && eraseBeforeRef.current) {
+            onEraseSegmentRef.current(eraseBeforeRef.current);
           }
           erasingRef.current = false;
-          eraseRunRef.current = [];
+          eraseBeforeRef.current = null;
           break;
         case "select-color":
           onSelectColorRef.current(effect.color);
@@ -516,7 +518,12 @@ export function WritingLayer({
               tabIndex={toolbarOpen ? 0 : -1}
               aria-label={`Write in ${ITEM_LABEL[key]}`}
               title={ITEM_LABEL[key]}
-              onClick={() => onSelectColor(key)}
+              onClick={() => {
+                machineRef.current.armColor(key);
+                setTool("pen");
+                toolRef.current = "pen";
+                onSelectColor(key);
+              }}
               className={`relative grid h-9 w-9 place-items-center rounded-full border border-border transition ${
                 toolbarOpen ? "pointer-events-auto" : "pointer-events-none"
               } ${ringClass}`}
@@ -544,7 +551,15 @@ export function WritingLayer({
               tabIndex={toolbarOpen ? 0 : -1}
               aria-label={ITEM_LABEL[key]}
               title={ITEM_LABEL[key]}
-              onClick={key === "clear-all" ? () => onClearAll() : undefined}
+              onClick={
+                key === "clear-all"
+                  ? () => onClearAll()
+                  : () => {
+                      machineRef.current.armTool("eraser");
+                      setTool("eraser");
+                      toolRef.current = "eraser";
+                    }
+              }
               className={`relative grid h-9 w-9 place-items-center rounded-full border border-border bg-secondary text-foreground transition ${
                 toolbarOpen ? "pointer-events-auto" : "pointer-events-none"
               } ${ringClass}`}
